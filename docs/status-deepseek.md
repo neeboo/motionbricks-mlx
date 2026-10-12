@@ -103,3 +103,10 @@ DSH renderer、Chrome、Lark、Codex；训练侧当时没在跑）。因此所�
 **测试**：`pytest` **124 passed, 1 skipped**（新增 41 个，锁住开关语法、SplitMix64 向量化逐位一致、
 每个开关与总开关的 token 一致率、编译变体只建一次、零 mask 与无 mask 等价、量化只作用于矩阵且默认不动）。
 `mlx_plan.py --repeat 2` 两种状态都 "deterministic"。
+
+## 2026-10-12 优化轮（已收尾）
+- 判据先冻结后动手，逐项判定**全部否决**；详见 `docs/optimization-report.md`（481 行）。
+- 人类（Lead）裁定见 `docs/decisions/0004-adopt-bit-identical-f32.md`：f32 那组**默认开启**（逐位一致、零回归风险），
+  量化**继续关闭**（q8/q4 会把动作改掉，有 token 级证据），并**授权**我做 `data/agent.py` 的 host NumPy 向量化。
+- 下一页工作：① 把 `MOTIONBRICKS_MLX_OPT` 默认值翻成开（改一行 + 重跑 `pytest`/`mlx_align` 验证）；
+  ② `data/agent.py` 向量化（目标 1.2–1.4×，验收=逐位一致）；③ 等 GLM 的动作质量门建立后再讨论离线烘焙用不用 q8。
