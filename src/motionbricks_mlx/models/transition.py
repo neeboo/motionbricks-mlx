@@ -18,7 +18,7 @@ import mlx.core as mx
 import numpy as np
 
 from ..data.gguf import GgufFile  # noqa: F401  (re-exported convenience for callers)
-from . import motion_rep, sampling
+from . import motion_rep, nn, sampling
 from .bundle import Bundle
 from .decoder import VqDecoder
 from .pose import PosePlanner
@@ -81,6 +81,11 @@ class MlxPipeline:
         self.std = mx.array(bundle.motion_std.astype(np.float32))
         self.mean_np = bundle.motion_mean.astype(np.float32)
         self.std_np = bundle.motion_std.astype(np.float32)
+        # Per-feature scale vector, built once with the very same scalar
+        # expression as :meth:`_scale` so the vectorised host blocks below are
+        # bit-identical to the per-element loops they replace.
+        self._scale_all = np.array([self._scale(index) for index in range(self.std_np.size)],
+                                   dtype=np.float32)
         self.parents = bundle.joint_parents.astype(np.int32)
         self.codebook = bundle.vq_codebook
         self.codebook_np = np.asarray(bundle.vq_codebook, dtype=np.float32)
@@ -102,29 +107,43 @@ class MlxPipeline:
                        sampling_argmax: bool = False,
                        capture_trace: bool = False) -> TransitionResult:
         trace: dict[str, np.ndarray] = {}
+        fast = nn._option("transition_fast", False)
         initial_x = float(constraints.global_root[0, 0])
         initial_z = float(constraints.global_root[0, 2])
 
         raw_global = constraints.global_root
         normalized_global = np.empty((BOUNDARY_FRAMES, GLOBAL_ROOT_WIDTH), dtype=np.float32)
-        for feature in range(GLOBAL_ROOT_WIDTH):
-            values = raw_global[:, feature]
-            if feature == 0:
-                values = values - np.float32(initial_x)
-            elif feature == 2:
-                values = values - np.float32(initial_z)
-            normalized_global[:, feature] = [
-                self.normalize(v, feature) for v in values]
         normalized_local = np.empty((BOUNDARY_FRAMES, LOCAL_ROOT_WIDTH), dtype=np.float32)
-        for feature in range(LOCAL_ROOT_WIDTH):
-            normalized_local[:, feature] = [
-                self.normalize(v, 5 + feature) for v in constraints.local_root[:, feature]]
         normalized_poses = np.empty((BOUNDARY_FRAMES, INTERNAL_POSE_WIDTH), dtype=np.float32)
-        for frame in range(BOUNDARY_FRAMES):
-            normalized_poses[frame, 0] = self.normalize(raw_global[frame, 1], 8)
-            normalized_poses[frame, 1:] = [
-                self.normalize(v, 9 + index)
-                for index, v in enumerate(constraints.poses[frame])]
+        if fast:
+            # Same elementwise arithmetic as normalize(), evaluated as arrays.
+            adjusted = raw_global.copy()
+            adjusted[:, 0] = adjusted[:, 0] - np.float32(initial_x)
+            adjusted[:, 2] = adjusted[:, 2] - np.float32(initial_z)
+            normalized_global[:] = (adjusted - self.mean_np[0:GLOBAL_ROOT_WIDTH]) \
+                / self._scale_all[0:GLOBAL_ROOT_WIDTH]
+            normalized_local[:] = (constraints.local_root - self.mean_np[5:9]) \
+                / self._scale_all[5:9]
+            normalized_poses[:, 0] = (raw_global[:, 1] - self.mean_np[8]) / self._scale_all[8]
+            normalized_poses[:, 1:] = (constraints.poses - self.mean_np[9:9 + EXTERNAL_POSE_WIDTH]) \
+                / self._scale_all[9:9 + EXTERNAL_POSE_WIDTH]
+        else:
+            for feature in range(GLOBAL_ROOT_WIDTH):
+                values = raw_global[:, feature]
+                if feature == 0:
+                    values = values - np.float32(initial_x)
+                elif feature == 2:
+                    values = values - np.float32(initial_z)
+                normalized_global[:, feature] = [
+                    self.normalize(v, feature) for v in values]
+            for feature in range(LOCAL_ROOT_WIDTH):
+                normalized_local[:, feature] = [
+                    self.normalize(v, 5 + feature) for v in constraints.local_root[:, feature]]
+            for frame in range(BOUNDARY_FRAMES):
+                normalized_poses[frame, 0] = self.normalize(raw_global[frame, 1], 8)
+                normalized_poses[frame, 1:] = [
+                    self.normalize(v, 9 + index)
+                    for index, v in enumerate(constraints.poses[frame])]
 
         if capture_trace:
             trace["input.global_root_values"] = raw_global.copy()
@@ -146,14 +165,15 @@ class MlxPipeline:
         allowed = constraints.allowed_tokens
         enabled = int(np.count_nonzero(allowed))
         duration_logits = np.zeros(1, dtype=np.float32)
+        mx_duration_logits = None
         if enabled == 1:
             tokens = 6 + int(np.flatnonzero(allowed)[0])
         elif enabled > 1:
-            duration_logits = np.asarray(
-                self.root.duration_logits(
-                    mx.array(normalized_global), mx.array(normalized_local),
-                    mx.array(normalized_poses), mx.array(global_mask),
-                    mx.array(local_mask), mx.array(pose_mask)))
+            mx_duration_logits = self.root.duration_logits(
+                mx.array(normalized_global), mx.array(normalized_local),
+                mx.array(normalized_poses), mx.array(global_mask),
+                mx.array(local_mask), mx.array(pose_mask))
+            duration_logits = np.asarray(mx_duration_logits)
             best = -np.inf
             tokens = 0
             for index in range(11):
@@ -169,17 +189,25 @@ class MlxPipeline:
         frames = tokens * 4
         dense_target = np.zeros((frames, GLOBAL_ROOT_WIDTH), dtype=np.float32)
         dense_target_mask = np.zeros((frames, 1), dtype=np.float32)
-        for boundary_index in range(BOUNDARY_FRAMES):
-            frame = boundary_index if boundary_index < 4 else frames - 8 + boundary_index
-            # run_transition passes the *normalized* boundary vector into the
-            # planner (src/planner.cpp:106-107), so the target condition is
-            # normalized too (src/root.cpp:464-469).
-            dense_target[frame] = normalized_global[boundary_index]
-            dense_target_mask[frame, 0] = 1.0 if constraints.has_global_root[boundary_index] else 0.0
+        if fast:
+            boundary_frame = np.array([0, 1, 2, 3, frames - 4, frames - 3,
+                                       frames - 2, frames - 1])
+            dense_target[boundary_frame] = normalized_global
+            dense_target_mask[boundary_frame, 0] = \
+                constraints.has_global_root.astype(np.float32)
+        else:
+            for boundary_index in range(BOUNDARY_FRAMES):
+                frame = boundary_index if boundary_index < 4 else frames - 8 + boundary_index
+                # run_transition passes the *normalized* boundary vector into the
+                # planner (src/planner.cpp:106-107), so the target condition is
+                # normalized too (src/root.cpp:464-469).
+                dense_target[frame] = normalized_global[boundary_index]
+                dense_target_mask[frame, 0] = 1.0 if constraints.has_global_root[boundary_index] else 0.0
         _, predicted_global = self.root.plan(
             mx.array(normalized_global), mx.array(normalized_local), mx.array(normalized_poses),
             mx.array(global_mask), mx.array(local_mask), mx.array(pose_mask),
-            tokens, mx.array(dense_target), mx.array(dense_target_mask))
+            tokens, mx.array(dense_target), mx.array(dense_target_mask),
+            duration_logits=mx_duration_logits)
         predicted_global_np = np.asarray(predicted_global, dtype=np.float32).reshape(
             frames, GLOBAL_ROOT_WIDTH)
         if capture_trace:
@@ -188,26 +216,47 @@ class MlxPipeline:
 
         # --- predicted local root (src/planner.cpp:117-145) --------------
         unnormalized_global = np.empty((frames, GLOBAL_ROOT_WIDTH), dtype=np.float32)
-        for feature in range(GLOBAL_ROOT_WIDTH):
-            unnormalized_global[:, feature] = [
-                self.unnormalize(v, feature) for v in predicted_global_np[:, feature]]
-        heading = np.arctan2(unnormalized_global[:, 4], unnormalized_global[:, 3]).astype(np.float32)
         predicted_local = np.empty((frames, LOCAL_ROOT_WIDTH), dtype=np.float32)
-        for frame in range(frames):
-            if frame + 1 < frames:
-                velocity_from, velocity_to = frame, frame + 1
-            else:
-                velocity_from, velocity_to = frame - 1, frame
-            raw_values = np.array([
-                wrap_angle(heading[velocity_to] - heading[velocity_from]) * np.float32(FPS),
-                (unnormalized_global[velocity_to, 0] - unnormalized_global[velocity_from, 0])
-                * np.float32(FPS),
-                (unnormalized_global[velocity_to, 2] - unnormalized_global[velocity_from, 2])
-                * np.float32(FPS),
-                unnormalized_global[frame, 1],
-            ], dtype=np.float32)
-            for feature in range(LOCAL_ROOT_WIDTH):
-                predicted_local[frame, feature] = self.normalize(raw_values[feature], 5 + feature)
+        if fast:
+            unnormalized_global[:] = predicted_global_np * self._scale_all[0:GLOBAL_ROOT_WIDTH] \
+                + self.mean_np[0:GLOBAL_ROOT_WIDTH]
+            heading = np.arctan2(unnormalized_global[:, 4],
+                                 unnormalized_global[:, 3]).astype(np.float32)
+            velocity_from = np.arange(frames, dtype=np.intp)
+            velocity_to = velocity_from + 1
+            velocity_from[-1] = frames - 2
+            velocity_to[-1] = frames - 1
+            raw = np.empty((frames, LOCAL_ROOT_WIDTH), dtype=np.float32)
+            delta_heading = heading[velocity_to] - heading[velocity_from]
+            raw[:, 0] = (
+                np.remainder(delta_heading + np.float32(np.pi), TWO_PI) - np.float32(np.pi)
+            ) * np.float32(FPS)
+            raw[:, 1] = (unnormalized_global[velocity_to, 0]
+                         - unnormalized_global[velocity_from, 0]) * np.float32(FPS)
+            raw[:, 2] = (unnormalized_global[velocity_to, 2]
+                         - unnormalized_global[velocity_from, 2]) * np.float32(FPS)
+            raw[:, 3] = unnormalized_global[:, 1]
+            predicted_local[:] = (raw - self.mean_np[5:9]) / self._scale_all[5:9]
+        else:
+            for feature in range(GLOBAL_ROOT_WIDTH):
+                unnormalized_global[:, feature] = [
+                    self.unnormalize(v, feature) for v in predicted_global_np[:, feature]]
+            heading = np.arctan2(unnormalized_global[:, 4], unnormalized_global[:, 3]).astype(np.float32)
+            for frame in range(frames):
+                if frame + 1 < frames:
+                    velocity_from, velocity_to = frame, frame + 1
+                else:
+                    velocity_from, velocity_to = frame - 1, frame
+                raw_values = np.array([
+                    wrap_angle(heading[velocity_to] - heading[velocity_from]) * np.float32(FPS),
+                    (unnormalized_global[velocity_to, 0] - unnormalized_global[velocity_from, 0])
+                    * np.float32(FPS),
+                    (unnormalized_global[velocity_to, 2] - unnormalized_global[velocity_from, 2])
+                    * np.float32(FPS),
+                    unnormalized_global[frame, 1],
+                ], dtype=np.float32)
+                for feature in range(LOCAL_ROOT_WIDTH):
+                    predicted_local[frame, feature] = self.normalize(raw_values[feature], 5 + feature)
         if constraints.has_local_root[7]:
             predicted_local[frames - 1] = normalized_local[7]
         if capture_trace:
@@ -216,10 +265,16 @@ class MlxPipeline:
         # --- pose conditions (src/planner.cpp:147-166) -------------------
         pose_condition = np.zeros((frames, INTERNAL_POSE_WIDTH), dtype=np.float32)
         has_pose_condition = np.zeros(frames, dtype=np.uint8)
-        for boundary in range(BOUNDARY_FRAMES):
-            frame = boundary if boundary < 4 else frames - 8 + boundary
-            pose_condition[frame] = normalized_poses[boundary]
-            has_pose_condition[frame] = constraints.has_poses[boundary]
+        if fast:
+            condition_frames = np.array([0, 1, 2, 3, frames - 4, frames - 3,
+                                         frames - 2, frames - 1])
+            pose_condition[condition_frames] = normalized_poses
+            has_pose_condition[condition_frames] = constraints.has_poses
+        else:
+            for boundary in range(BOUNDARY_FRAMES):
+                frame = boundary if boundary < 4 else frames - 8 + boundary
+                pose_condition[frame] = normalized_poses[boundary]
+                has_pose_condition[frame] = constraints.has_poses[boundary]
         pose_root = np.stack([
             predicted_global_np[:, 0], predicted_global_np[:, 2],
             predicted_global_np[:, 3], predicted_global_np[:, 4]], axis=1).astype(np.float32)
@@ -246,11 +301,16 @@ class MlxPipeline:
                 else uniform.reshape(-1).copy())
 
         # --- VQ codebook lookup (src/planner.cpp:186-198) ----------------
-        quantized = np.empty((256, tokens), dtype=np.float32)
-        for position in range(tokens):
-            for head in range(8):
-                entry = int(selected[position * 8 + head])
-                quantized[head * 32:(head + 1) * 32, position] = self.codebook_np[head, entry]
+        if fast:
+            selected_2d = selected.reshape(tokens, 8)
+            entries = self.codebook_np[np.arange(8)[None, :], selected_2d]   # (tokens, 8, 32)
+            quantized = entries.transpose(1, 2, 0).reshape(256, tokens)
+        else:
+            quantized = np.empty((256, tokens), dtype=np.float32)
+            for position in range(tokens):
+                for head in range(8):
+                    entry = int(selected[position * 8 + head])
+                    quantized[head * 32:(head + 1) * 32, position] = self.codebook_np[head, entry]
         if capture_trace:
             trace["decoder.quantized"] = quantized.reshape(-1).copy()
 

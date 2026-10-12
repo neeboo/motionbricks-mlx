@@ -4,6 +4,21 @@ Port of ``src/root.cpp`` (``run_root_planner_impl`` / ``run_root_duration_probe`
 and its conv-decoder helper.  Layout follows the reference: activations in the
 convolutional decoder are ``(channels, time)`` (GGML ``ne = (time, channels)``),
 everything in the transformers is ``(time, channels)``.
+
+Optimization note
+-----------------
+``MlxPipeline.run_transition`` needs the duration logits *before* it can call
+:meth:`RootPlanner.plan`, because the probing decides how many tokens are
+planned.  The accepted port therefore ran the probe twice: once through
+:meth:`duration_logits` and again inside :meth:`plan`, where its result was
+discarded (``_, predicted_global = self.root.plan(...)``).  The probe is a
+boundary embedding plus a 3-layer transformer, so that was a duplicate graph,
+a duplicate dispatch chain and one extra device synchronisation per step.
+
+:meth:`plan` now accepts the already-computed logits through
+``duration_logits=``; when they are supplied the probe transformer is not built
+at all.  ``MOTIONBRICKS_MLX_OPT=root_dedup=0`` restores the previous behaviour,
+and ``root_fast=0`` restores the verbatim accepted implementation.
 """
 
 from __future__ import annotations
@@ -30,6 +45,9 @@ class RootPlanner:
 
     def __init__(self, weights: Weights):
         self.w = weights
+        self._middle_rows: dict[int, mx.array] = {}
+        self._position_tables: dict[int, mx.array] = {}
+        self._stages: dict[str, nn.StageCache] = {}
 
     # -- helpers ---------------------------------------------------------
 
@@ -74,6 +92,27 @@ class RootPlanner:
         positioned = frame_emb + self.w["_input_position_emb.weight"]
         return frame_emb, positioned
 
+    def _middle_row(self, requested_tokens: int) -> mx.array:
+        row = self._middle_rows.get(requested_tokens)
+        if row is None:
+            row = self.w["_middle_token_emb.weight"][requested_tokens - 6]
+            self._middle_rows[requested_tokens] = row
+        return row
+
+    def _position_table(self, requested_tokens: int) -> mx.array:
+        table = self._position_tables.get(requested_tokens)
+        if table is None:
+            table = self.w["_position_emb.embed"].reshape(16, ROOT_EMBEDDING)[0:requested_tokens]
+            self._position_tables[requested_tokens] = table
+        return table
+
+    def _stage(self, name: str, body) -> nn.StageCache:
+        cache = self._stages.get(name)
+        if cache is None:
+            cache = nn.StageCache(name, body)
+            self._stages[name] = cache
+        return cache
+
     # -- stages ----------------------------------------------------------
 
     def duration_logits(self, global_root: mx.array, local_root: mx.array,
@@ -84,6 +123,25 @@ class RootPlanner:
         Uses the masked-duration embedding (upstream token index 12, i.e.
         ``duration_input_tokens = 18``), independent of the planned token count.
         """
+        if not nn._option("root_fast", False):
+            return self._duration_logits_reference(
+                global_root, local_root, poses, global_mask, local_mask, pose_mask)
+        _, positioned = self._boundary(global_root, local_root, poses,
+                                       global_mask, local_mask, pose_mask)
+        if nn._option("root_compile", False):
+            return self._stage("duration", self._duration_core)((), positioned)
+        return self._duration_core(positioned)
+
+    def _duration_core(self, positioned: mx.array) -> mx.array:
+        duration_emb = self.w["_proj_input_num_tokens.weight"][12]
+        first_input = mx.concatenate([duration_emb[None, :], positioned], axis=0)
+        first_output = self._transformer(first_input, "_shared_transformer_model", ROOT_LAYERS)
+        return nn.linear(first_output[0:1], self.w["_proj_num_token_output_logit.weight"],
+                         self.w["_proj_num_token_output_logit.bias"])[0]
+
+    def _duration_logits_reference(self, global_root: mx.array, local_root: mx.array,
+                                   poses: mx.array, global_mask: mx.array,
+                                   local_mask: mx.array, pose_mask: mx.array) -> mx.array:
         _, positioned = self._boundary(global_root, local_root, poses,
                                        global_mask, local_mask, pose_mask)
         duration_emb = self.w["_proj_input_num_tokens.weight"][12]
@@ -95,7 +153,63 @@ class RootPlanner:
     def plan(self, global_root: mx.array, local_root: mx.array, poses: mx.array,
              global_mask: mx.array, local_mask: mx.array, pose_mask: mx.array,
              requested_tokens: int, dense_target: mx.array,
-             dense_target_mask: mx.array) -> tuple[mx.array, mx.array]:
+             dense_target_mask: mx.array,
+             duration_logits: mx.array | None = None) -> tuple[mx.array, mx.array]:
+        """``run_root_planner_auto_probe``: ``(duration_logits, global_root_values)``.
+
+        ``global_root_values`` is ``(requested_tokens * 4, 5)`` normalized.  When
+        ``duration_logits`` is supplied (and ``root_dedup`` is on) the probe
+        transformer is not rebuilt: the caller already ran it, and the accepted
+        port discarded this second copy.
+        """
+        if not nn._option("root_fast", False):
+            return self._plan_reference(global_root, local_root, poses, global_mask,
+                                        local_mask, pose_mask, requested_tokens,
+                                        dense_target, dense_target_mask)
+        frame_emb, positioned = self._boundary(global_root, local_root, poses,
+                                               global_mask, local_mask, pose_mask)
+        reuse = duration_logits is not None and nn._option("root_dedup", False)
+        if reuse:
+            logits = duration_logits
+        elif nn._option("root_compile", False):
+            logits = self._stage("duration", self._duration_core)((), positioned)
+        else:
+            logits = self._duration_core(positioned)
+
+        has_frame = mx.clip(global_mask + local_mask + pose_mask, 0.0, 1.0)
+        arguments = (positioned, frame_emb, has_frame, dense_target, dense_target_mask,
+                     requested_tokens, requested_tokens * 4)
+        if nn._option("root_compile", False):
+            values = self._stage("tokens_decoder", self._tokens_decoder_core)(
+                (requested_tokens,), *arguments)
+        else:
+            values = self._tokens_decoder_core(*arguments)
+        return logits, values
+
+    def _tokens_decoder_core(self, positioned: mx.array, frame_emb: mx.array,
+                             has_frame: mx.array, dense_target: mx.array,
+                             dense_target_mask: mx.array, requested_tokens: int,
+                             frames: int) -> mx.array:
+        middle_emb = self._middle_row(requested_tokens)
+        second_input = mx.concatenate([middle_emb[None, :], positioned], axis=0)
+        second_input = mx.concatenate([second_input, self._position_table(requested_tokens)],
+                                      axis=0)
+        second_output = self._transformer(second_input, "_root_token_transformer_model",
+                                          ROOT_LAYERS)
+        root_tokens = second_output[9:9 + requested_tokens]
+        decoder_tokens = nn.transpose_contiguous(root_tokens, requested_tokens, ROOT_EMBEDDING)
+
+        absent = self.w["_conv_no_frame_emb"]
+        masked_frames = (frame_emb - absent) * has_frame + absent
+        middle = mx.broadcast_to(absent[None, :], (frames - 8, ROOT_EMBEDDING))
+        dense_frame = mx.concatenate([masked_frames[0:4], middle, masked_frames[4:8]], axis=0)
+        return self._decoder(decoder_tokens, dense_frame, dense_target, dense_target_mask,
+                             requested_tokens)
+
+    def _plan_reference(self, global_root: mx.array, local_root: mx.array, poses: mx.array,
+                        global_mask: mx.array, local_mask: mx.array, pose_mask: mx.array,
+                        requested_tokens: int, dense_target: mx.array,
+                        dense_target_mask: mx.array) -> tuple[mx.array, mx.array]:
         """``run_root_planner_auto_probe``: ``(duration_logits, global_root_values)``.
 
         ``global_root_values`` is ``(requested_tokens * 4, 5)`` normalized.

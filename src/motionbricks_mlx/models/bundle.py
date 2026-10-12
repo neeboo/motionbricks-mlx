@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,9 +24,43 @@ import mlx.core as mx
 import numpy as np
 
 from ..data.gguf import GgufFile
+from . import nn
 
 MLX_BUNDLE_FORMAT = "motionbricks-mlx-bundle-v1"
 COMPONENTS = ("pose", "root", "vq-decoder", "support")
+
+# Tensors that are *tables* (indexed by row, or added elementwise) rather than
+# matrices consumed by ``nn.linear``.  Quantizing one of these would change its
+# values that are never dequantized on the way out, so they are excluded.
+_TABLE_TENSORS = frozenset({
+    "_pose_token_emb.weight", "_position_emb.embed", "_proj_num_valid_positions.weight",
+    "_proj_input_num_tokens.weight", "_middle_token_emb.weight", "_input_position_emb.weight",
+    "_conv_no_frame_emb", "neutral_joints", "joint_parents", "motion_mean", "motion_std",
+})
+
+
+def _parse_quantization(specification: str | int | None) -> tuple[int, int]:
+    """``"q8"``/``"q4"``/``8``/``None`` -> ``(group_size, bits)``; ``(0, 0)`` = off."""
+    if specification is None:
+        return (0, 0)
+    if isinstance(specification, int):
+        return (64, specification)
+    text = str(specification).strip().lower()
+    if text in ("", "none", "off", "f32", "0"):
+        return (0, 0)
+    if text.startswith("q"):
+        text = text[1:]
+    group_size = 64
+    if "x" in text:                       # e.g. "4x32"
+        text, _, group = text.partition("x")
+        group_size = int(group)
+    return (group_size, int(text))
+
+
+def _quantizable(name: str, shape: tuple[int, ...]) -> bool:
+    if len(shape) != 2 or name in _TABLE_TENSORS or name.endswith(".embed"):
+        return False
+    return True
 
 # Reference bundle inventory (generated/g1-f32/manifest.json).
 EXPECTED_INVENTORY = {
@@ -54,7 +89,7 @@ class Weights:
     """Name -> array mapping with the reference's compaction fallback."""
 
     component: str
-    tensors: dict[str, mx.array]
+    tensors: dict[str, mx.array | nn.QuantizedWeight]
     resolutions: dict[str, Resolution] = field(default_factory=dict)
 
     @staticmethod
@@ -80,10 +115,10 @@ class Weights:
         self.resolutions[name] = Resolution(name, resolved, fallback)
         return resolved
 
-    def __getitem__(self, name: str) -> mx.array:
+    def __getitem__(self, name: str) -> mx.array | nn.QuantizedWeight:
         return self.tensors[self.resolve(name)]
 
-    def get(self, name: str) -> mx.array | None:
+    def get(self, name: str) -> mx.array | nn.QuantizedWeight | None:
         try:
             return self[name]
         except BundleError:
@@ -117,11 +152,14 @@ class Bundle:
     """
 
     def __init__(self, source: str | Path, device: str | None = None,
-                 verify: bool = False):
+                 verify: bool = False, quantize: str | int | None = None):
         self.source = Path(source)
         self.device = device
         if device is not None:
             mx.set_default_device(mx.cpu if device == "cpu" else mx.gpu)
+        if quantize is None:
+            quantize = os.environ.get("MOTIONBRICKS_MLX_QUANT") or None
+        self.quantization = _parse_quantization(quantize)
         manifest_path = self.source / "manifest.json"
         if not manifest_path.is_file():
             raise BundleError(f"{self.source}: no manifest.json")
@@ -133,6 +171,8 @@ class Bundle:
         if verify:
             self.verify_hashes()
         self._cache: dict[str, Weights] = {}
+        self.quantized_tensors = 0
+        self.float_tensors = 0
 
     # -- verification ----------------------------------------------------
 
@@ -149,21 +189,45 @@ class Bundle:
     def weights(self, component: str) -> Weights:
         if component in self._cache:
             return self._cache[component]
-        tensors: dict[str, mx.array] = {}
+        tensors: dict[str, mx.array | nn.QuantizedWeight] = {}
+        group_size, bits = self.quantization
         if self.converted:
             path = self.source / self.manifest["files"][component]["path"]
             with np.load(path, allow_pickle=False) as archive:
                 for name in archive.files:
-                    tensors[name] = mx.array(archive[name])
+                    self._store(tensors, name, archive[name], group_size, bits)
         else:
             path = self.source / self.manifest["components"][component]["path"]
             with GgufFile(path) as gguf:
                 for name in gguf.tensor_names:
-                    tensors[name] = mx.array(gguf.tensor(name))
-        mx.eval(list(tensors.values()))
+                    self._store(tensors, name, gguf.tensor(name), group_size, bits)
+        mx.eval(*(value for value in tensors.values()
+                  if not isinstance(value, nn.QuantizedWeight)))
         weights = Weights(component, tensors)
         self._cache[component] = weights
         return weights
+
+    def _store(self, tensors, name: str, raw: np.ndarray, group_size: int, bits: int) -> None:
+        """Add one tensor, quantizing in place of keeping its float32 copy.
+
+        Quantizing as each tensor arrives (instead of after the whole component
+        is resident) is what keeps the *peak* resident set down as well as the
+        steady-state one: the largest single pose matrix is 8 MB, so the float32
+        peak is one matrix rather than the 546 MB component.
+        """
+        array = mx.array(raw)
+        del raw
+        if group_size and _quantizable(name, array.shape):
+            quantized = nn.quantize_weight(array, group_size, bits)
+            if isinstance(quantized, nn.QuantizedWeight):
+                mx.eval(quantized.packed, quantized.scales)
+                if quantized.biases is not None:
+                    mx.eval(quantized.biases)
+                tensors[name] = quantized
+                self.quantized_tensors += 1
+                return
+        tensors[name] = array
+        self.float_tensors += 1
 
     @property
     def root(self) -> Weights:

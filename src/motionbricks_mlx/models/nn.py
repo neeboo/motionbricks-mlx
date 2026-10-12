@@ -18,16 +18,166 @@ in this module are in that MLX order:
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass
+
 import mlx.core as mx
 
 LAYER_NORM_EPSILON = 1.0e-5  # ggml_norm(ctx, x, 1.0e-5F) in src/root.cpp:59
 
+# ---------------------------------------------------------------------------
+# Optimization switches
+# ---------------------------------------------------------------------------
+# Every optimization in this port sits behind one environment variable so that
+# the accepted (pre-optimization) behaviour stays reproducible and each A/B
+# measurement can be rerun from a single process:
+#
+#     MOTIONBRICKS_MLX_OPT=1                   -> every optimization
+#     MOTIONBRICKS_MLX_OPT=transition_fast=1   -> just one of them
+#
+# **The defaults are OFF.**  `docs/optimization-report.md` fixed the adoption
+# rule before the work: a candidate is adopted only at >= 1.5x per-step p50 or
+# >= 2x cold start / resident memory.  The float32 optimizations reach 1.22-1.24x
+# and are therefore recorded as *rejected*, and a rejected optimization must not
+# silently become the default.  They are bit-exact and deterministic (see the
+# report and tests/test_mlx_optimizations.py); enabling them is one environment
+# variable, and the measured numbers are in the report.
+#
+# The value is read on every call (not at import time) so that both arms can be
+# interleaved inside one process.  Unknown names keep their declared default, so
+# adding a switch cannot silently change an existing run.
+_FALSY = frozenset(("", "0", "false", "no", "off"))
 
-def linear(x: mx.array, weight: mx.array, bias: mx.array) -> mx.array:
+
+def _option(name: str, default: bool = False) -> bool:
+    """True when optimization *name* is enabled for this process.
+
+    Grammar of ``MOTIONBRICKS_MLX_OPT`` (comma separated, applied in order):
+
+    * a bare token is the global switch: ``MOTIONBRICKS_MLX_OPT=1`` enables
+      every optimization, ``=0`` disables every one;
+    * ``name=1`` / ``name=0`` overrides one optimization, and ``*=1`` / ``*=0``
+      overrides all of them.
+
+    So ``MOTIONBRICKS_MLX_OPT=pose_compile=1`` turns on only the pose planner's
+    compiled graph, on top of the accepted baseline.
+    """
+    raw = os.environ.get("MOTIONBRICKS_MLX_OPT")
+    if raw is None:
+        return default
+    enabled = default
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        key, separator, value = item.partition("=")
+        key = key.strip().lower()
+        if separator:
+            if key in ("*", "all", "opt") or key == name:
+                enabled = value.strip().lower() not in _FALSY
+        else:
+            enabled = key not in _FALSY
+    return enabled
+
+
+class StageCache:
+    """``mx.compile`` wrapper keyed by an explicit shape signature.
+
+    MLX compiles a function once per input signature; ``positions`` takes 11
+    values (``tokens`` 6..16) in a single planning session, so the compiled
+    variants are memoised here instead of being rebuilt.  ``compiles`` counts
+    how many variants were actually built, which is what the "repeated graph
+    compilation" question in the optimization brief needs to be answered with.
+    """
+
+    def __init__(self, name: str, body):
+        self.name = name
+        self._body = body
+        self._variants: dict[tuple, object] = {}
+        self.compiles = 0
+        self.calls = 0
+
+    def __call__(self, signature: tuple, *args):
+        self.calls += 1
+        compiled = self._variants.get(signature)
+        if compiled is None:
+            compiled = mx.compile(self._body)
+            self._variants[signature] = compiled
+            self.compiles += 1
+        return compiled(*args)
+
+    def variants(self) -> int:
+        return len(self._variants)
+
+
+# ---------------------------------------------------------------------------
+# Weight quantization
+# ---------------------------------------------------------------------------
+# The inference stages are latency bound by the *dependent* kernel chain and by
+# streaming every weight of the model on every plan (the pose planner alone
+# re-reads ~537 MB of float32 matrices per forward).  MLX's affine group
+# quantization cuts that traffic by 2x (q8) or 4x (q4); ``linear`` below is the
+# only place weights are consumed as matrices, so a quantized weight only has to
+# be understood there.
+#
+# Quantization changes numerics by construction, so it is off by default and
+# measured against the token-identity gate rather than assumed safe.
+
+
+@dataclass(frozen=True)
+class QuantizedWeight:
+    """An affine-quantized ``(out, in)`` matrix, ready for ``linear``."""
+
+    packed: mx.array
+    scales: mx.array
+    biases: mx.array | None
+    group_size: int
+    bits: int
+    shape: tuple[int, int]
+
+    @property
+    def nbytes(self) -> int:
+        total = self.packed.nbytes + self.scales.nbytes
+        if self.biases is not None:
+            total += self.biases.nbytes
+        return total
+
+
+def quantize_weight(weight: mx.array, group_size: int, bits: int) -> mx.array | QuantizedWeight:
+    """Quantize a 2-D linear weight, or return it unchanged when ineligible.
+
+    MLX requires the last (input) dimension to be divisible by ``group_size``
+    and only supports group sizes 32/64/128; a tensor that does not fit stays in
+    float32 so the model remains complete.
+    """
+    if weight.ndim != 2:
+        return weight
+    if weight.shape[1] % group_size != 0:
+        return weight
+    packed, scales, biases = mx.quantize(weight, group_size=group_size, bits=bits)
+    return QuantizedWeight(packed, scales, biases, group_size, bits,
+                           (int(weight.shape[0]), int(weight.shape[1])))
+
+
+def dequantize_weight(weight: mx.array | QuantizedWeight) -> mx.array:
+    """Float32 view of a weight, for tracing and for tests."""
+    if not isinstance(weight, QuantizedWeight):
+        return weight
+    return mx.dequantize(weight.packed, weight.scales, weight.biases,
+                         group_size=weight.group_size, bits=weight.bits).reshape(weight.shape)
+
+
+def linear(x: mx.array, weight: mx.array | QuantizedWeight, bias: mx.array) -> mx.array:
     """``ggml_add(ctx, ggml_mul_mat(ctx, matrix, input), bias)``.
 
-    ``weight`` is ``(out, in)`` and ``x`` is ``(..., in)``.
+    ``weight`` is ``(out, in)`` and ``x`` is ``(..., in)``.  A quantized weight
+    is multiplied through MLX's quantized kernel; the float32 path is unchanged.
     """
+    if isinstance(weight, QuantizedWeight):
+        result = mx.quantized_matmul(x, weight.packed, weight.scales, weight.biases,
+                                     transpose=True, group_size=weight.group_size,
+                                     bits=weight.bits)
+        return result if bias is None else result + bias
     return x @ weight.T + bias
 
 

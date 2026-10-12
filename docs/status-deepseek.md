@@ -58,3 +58,48 @@ B 若要在同一批文件上改动，先协调。`src/motionbricks_mlx/training
 MLX GPU p50 57 ms / p90 65 ms / max 212 ms；冷启动 457 ms(CPU)/310 ms(GPU)；
 峰值 MLX 748/779 MB（进程 RSS 852 MB）。参考 GGML（debug 构建、CPU、10 线程）p50 **1858 ms**。
 即 CPU 约 10×、Metal 约 33×。
+
+---
+
+## 2026-10-12 · 推理优化一轮（判据先写死，再动手）
+
+判据在动手**之前**写进 `docs/optimization-report.md` 第 0 节并冻结：性能门 = p50 改善 ≥1.5× **或**
+冷启动/常驻内存 ≥2×；正确性门 = `mlx_align` 仍 OK，且 N≥5 组 seed 的 `pose.tokens` 与 f32 基线
+**逐 token 一致**（不一致时只允许"差异率 + 动作偏差 ≤0.5× 容差"并限定用途）。
+
+**结论：一条都没"采用"。**（全部按上表判据判定，未事后改判）
+
+- 唯一能过性能门的是量化 q4（常驻内存 791→222 MB = **3.56×**，p50 1.36×），但 token 门不过：
+  5 组 seed 全 0/6 步 token 一致，逐 token 差异 27–31%，3/6 步连**时长**都变了，
+  roots 偏差 30–91× 容差、旋转 157–216× 容差。q8 也一样不过（1.5–3.6% 差异、roots 2.2–25.6× 容差）。
+  `mlx_align plan` 对参考同样是 FAIL（q8 4 个数组、q4 9 个）。→ **否决（正确性）**。
+- 所有 f32 改动（重复 duration probe 去重、形状常量提升、`mx.compile`、host NumPy 向量化）
+  **token 完全一致**（GPU 30/30 步逐位、CPU 16/16 步逐 token），但只有 **1.19×（pooled）/1.12×（paired）**
+  p50，够不到 1.5×。→ 逐项 **否决**。
+- 既然"否决"，这些开关一律**默认关闭**；默认路径重放已验收产物 `out/plan-mlx.json` **0 个值不同**。
+  要开就 `MOTIONBRICKS_MLX_OPT=1`（或 `MOTIONBRICKS_MLX_QUANT=q4`）。这是留给人类/父 agent 的取舍，
+  不是我事后放宽判据。
+
+**诊断（比结论更重要）**：把每个 stage 拆成"建图 / `mx.eval`"两段后，建图只占 **2–8 %**，92–98 % 是
+**GPU 上互相依赖的小 kernel**（batch ≤16），所以 `mx.compile` 只能优化那 2–8 %——这解释了它为何
+几乎无用（pose −6 %、root −14 %、decoder −11 %，合计 2 ms/步）。真正的杠杆有两个：
+
+1. **`data/agent.py` 每步 19.9 ms / 55 ms（36 %）是 host NumPy**（`build_constraints` 14.5 ms，其中
+   `_matrix_xyzw` 7.9、`_cont6d_matrix` 4.9；每次调用 ~35 µs 而数组只有 3×3 / 34 关节——纯调用开销）。
+   该文件不在本轮授权名单里，**没碰**，已写进报告第 10 节：这是下一段 1.2–1.4×，需要与 B 线协调。
+2. **批量**：同一份 pose 权重跑 B 个场景，B=2/4/8 的单场景吞吐 2.37×/3.12×/6.05×，而整批延迟只从
+   7.1 涨到 14.7 ms（GPU 在 B=1 时严重空转）。但单次规划 p50 不变、且 B≥4 不再逐位一致（1.5e-5），
+   判据不覆盖它 → **记为否决**（batch-bake 可选，未采用）。
+
+**红线遵守**：只改 `models/{nn,root,pose,decoder,transition,bundle,sampling}.py`、`scripts/mlx_bench.py`、
+新增 `tests/test_mlx_optimizations.py`、`docs/optimization-report.md` 与本文件；`training/**`、
+`train_*.py`、`motion-representation.md`、`README.md`、`NOTICE`、`LICENSE`、`pyproject.toml` 未动；
+参考仓库只读；无 `mlx_plan.py`/`mlx_align.py` 语义改动（只加了不改变默认行为的开关，且默认关闭）。
+
+**测量环境**：机器**不空闲**，load average 6.3–17.4（桌面进程：mihomo ~85 % 单核、WindowServer、
+DSH renderer、Chrome、Lark、Codex；训练侧当时没在跑）。因此所有前后对比都在**同一进程内交替**
+（A,B,A,B…，每步轮转先后顺序）取配对比值，单臂 bench 只作佐证。
+
+**测试**：`pytest` **124 passed, 1 skipped**（新增 41 个，锁住开关语法、SplitMix64 向量化逐位一致、
+每个开关与总开关的 token 一致率、编译变体只建一次、零 mask 与无 mask 等价、量化只作用于矩阵且默认不动）。
+`mlx_plan.py --repeat 2` 两种状态都 "deterministic"。

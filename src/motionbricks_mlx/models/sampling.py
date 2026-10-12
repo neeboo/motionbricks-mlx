@@ -3,6 +3,16 @@
 Exact port of ``src/sampling.cpp``.  The reference deliberately avoids any
 library RNG so that a plan is reproducible from its seed alone; the same
 property has to hold here.
+
+Optimization note
+-----------------
+:func:`uniforms` used to advance SplitMix64 one element at a time in Python
+(~1280 NumPy scalar operations per plan).  The stream is fully independent per
+element -- element ``i`` is the mix of ``seed + (i+1) * GOLDEN`` -- so the same
+arithmetic is evaluated as one vectorised uint64 array expression.  Integer
+multiplication wraps modulo 2**64 in both forms, and ``z >> 40`` is exact in
+float64, so the vectorised stream is bit-identical; ``test_mlx_optimizations``
+checks that against the scalar loop element by element.
 """
 
 from __future__ import annotations
@@ -30,12 +40,33 @@ def sampling_uniform(state: np.uint64) -> tuple[np.float32, np.uint64]:
     return np.float32(np.float64(z >> np.uint64(40)) * np.float64(FLOAT_SCALE)), state
 
 
-def uniforms(seed: int, count: int) -> np.ndarray:
+def _uniforms_scalar(seed: int, count: int) -> np.ndarray:
     state = np.uint64(seed & 0xFFFFFFFFFFFFFFFF)
     values = np.empty(count, dtype=np.float32)
     for index in range(count):
         values[index], state = sampling_uniform(state)
     return values
+
+
+def _uniforms_vectorised(seed: int, count: int) -> np.ndarray:
+    """Same stream, evaluated as whole-array uint64 arithmetic."""
+    base = np.uint64(seed & 0xFFFFFFFFFFFFFFFF)
+    steps = np.arange(1, count + 1, dtype=np.uint64)
+    with np.errstate(over="ignore"):
+        state = base + steps * _GOLDEN          # wraps modulo 2**64
+        z = state
+        z = (z ^ (z >> np.uint64(30))) * _MIX1
+        z = (z ^ (z >> np.uint64(27))) * _MIX2
+        z = z ^ (z >> np.uint64(31))
+        magnitude = (z >> np.uint64(40)).astype(np.float64)
+    return (magnitude * np.float64(FLOAT_SCALE)).astype(np.float32)
+
+
+def uniforms(seed: int, count: int) -> np.ndarray:
+    from .nn import _option      # local import: keeps this module MLX-free
+    if _option("sampling_vector", False):
+        return _uniforms_vectorised(seed, count)
+    return _uniforms_scalar(seed, count)
 
 
 def gumbel_noise(uniform: np.ndarray) -> np.ndarray:

@@ -2,6 +2,24 @@
 
 Port of ``src/pose.cpp`` (``run_pose_planner``).  One forward returns
 ``positions x 80`` logits (8 heads x 10 codebook choices per position).
+
+Optimization note
+-----------------
+``plan`` has two implementations.  ``_plan_reference`` is the accepted port,
+kept verbatim so ``MOTIONBRICKS_MLX_OPT=pose_fast=0`` reproduces the baseline
+byte for byte.  ``_core`` is the same maths with
+
+* every per-call constant (head offsets, the position embedding slice, the
+  duration embedding row, the additive mask) hoisted into a cache instead of
+  being rebuilt -- and, for the mask, re-uploaded to the device -- on every
+  call, and
+* the all-zero mask dropped (``scores + 0`` is exact, and ``exp(-0.0) ==
+  exp(+0.0)``, so plain softmax is bit-identical to softmax over an additive
+  zero mask),
+
+wrapped in ``mx.compile`` so MLX fuses the ~40 elementwise ops per transformer
+layer into far fewer kernels.  MLX recompiles on every input-shape change, so
+the 11 possible ``positions`` values are memoised in :class:`nn.StageCache`.
 """
 
 from __future__ import annotations
@@ -21,6 +39,14 @@ class PosePlanner:
 
     def __init__(self, weights: Weights):
         self.w = weights
+        # Lazily-built, per-shape constants for the optimized path.
+        self._head_offsets: mx.array | None = None
+        self._masks: dict[tuple[int, int], mx.array | None] = {}
+        self._position_tables: dict[int, mx.array] = {}
+        self._duration_rows: dict[int, mx.array] = {}
+        self._stage: nn.StageCache | None = None
+
+    # -- reference implementation (unchanged) -----------------------------
 
     def token_embedding(self, pose_tokens: np.ndarray, positions: int) -> mx.array:
         """Token embedding + head offsets (src/pose.cpp:225-237).
@@ -45,9 +71,9 @@ class PosePlanner:
         frames = positions * 4
         return nn.reshape_ne(hidden, (160, frames))               # (frames, 160)
 
-    def plan(self, pose_tokens: np.ndarray, local_root_values: mx.array,
-             pose_condition: mx.array, has_pose_condition: mx.array,
-             positions: int, num_tokens: int) -> mx.array:
+    def _plan_reference(self, pose_tokens: np.ndarray, local_root_values: mx.array,
+                        pose_condition: mx.array, has_pose_condition: mx.array,
+                        positions: int, num_tokens: int) -> mx.array:
         """Return per-position codebook logits ``(positions, 80)``."""
         frames = positions * 4
         token_embedding = self.token_embedding(pose_tokens, positions)
@@ -81,6 +107,100 @@ class PosePlanner:
                                           POSE_TRANSFORMER_HEADS, mask_array)
         return nn.linear(hidden, self.w["_proj_pose_output_logit.weight"],
                          self.w["_proj_pose_output_logit.bias"])
+
+    # -- optimized implementation ----------------------------------------
+
+    def _mask(self, positions: int, num_tokens: int) -> mx.array | None:
+        """Additive attention mask, cached; ``None`` when it is all zeros."""
+        key = (positions, num_tokens)
+        if key not in self._masks:
+            if num_tokens >= positions:
+                # scores + 0.0 is exact and softmax(-0.0) == softmax(+0.0), so
+                # the zero mask is dropped rather than materialised.
+                self._masks[key] = None
+            else:
+                mask = np.zeros((positions, positions), dtype=np.float32)
+                mask[:, num_tokens:] = -np.inf
+                self._masks[key] = mx.array(mask)
+        return self._masks[key]
+
+    def _position_table(self, positions: int) -> mx.array:
+        table = self._position_tables.get(positions)
+        if table is None:
+            table = self.w["_position_emb.embed"].reshape(16, POSE_EMBEDDING)[0:positions]
+            self._position_tables[positions] = table
+        return table
+
+    def _duration_row(self, num_tokens: int) -> mx.array:
+        row = self._duration_rows.get(num_tokens)
+        if row is None:
+            row = self.w["_proj_num_valid_positions.weight"][num_tokens - 6]
+            self._duration_rows[num_tokens] = row
+        return row
+
+    def _core(self, pose_tokens: mx.array, local_root_values: mx.array,
+              pose_condition: mx.array, has_pose_condition: mx.array,
+              positions: int, num_tokens: int) -> mx.array:
+        """All-MLX pose planner forward; ``positions``/``num_tokens`` are
+        trace-time constants so each (positions, num_tokens) pair is one
+        compiled variant."""
+        frames = positions * 4
+        if self._head_offsets is None:
+            self._head_offsets = mx.array(
+                (np.arange(POSE_HEADS, dtype=np.int32) * 11)[None, :])
+        indices = (pose_tokens.astype(mx.int32) + self._head_offsets).reshape(-1)
+        table = self.w["_pose_token_emb.weight"]
+        embedded = table[indices].reshape(positions, 8 * 32)
+        hidden = nn.leaky_relu(nn.linear(
+            embedded, self.w["_proj_pose_token_emb.fc_layers.0.weight"],
+            self.w["_proj_pose_token_emb.fc_layers.0.bias"]))
+        hidden = nn.leaky_relu(nn.linear(
+            hidden, self.w["_proj_pose_token_emb.fc_layers.1.weight"],
+            self.w["_proj_pose_token_emb.fc_layers.1.bias"]))
+        hidden = nn.linear(hidden, self.w["_proj_pose_token_emb.forward_projection.weight"],
+                           self.w["_proj_pose_token_emb.forward_projection.bias"])
+        token_embedding = nn.reshape_ne(hidden, (160, frames))     # (frames, 160)
+
+        condition_embedding = nn.linear(pose_condition, self.w["_proj_local_pose.weight"],
+                                        self.w["_proj_local_pose.bias"])
+        pose_embedding = token_embedding + \
+            (condition_embedding - token_embedding) * has_pose_condition
+        pose_embedding = nn.reshape_ne(pose_embedding, (640, positions))
+
+        root_embedding = nn.linear(nn.reshape_ne(local_root_values, (16, positions)),
+                                   self.w["_proj_local_root_values.weight"],
+                                   self.w["_proj_local_root_values.bias"])
+        duration_embedding = mx.broadcast_to(self._duration_row(num_tokens)[None, :],
+                                             (positions, 128))
+        combined = mx.concatenate([pose_embedding, root_embedding, duration_embedding], axis=1)
+
+        hidden = mx.maximum(nn.linear(combined, self.w["_proj_input.0.weight"],
+                                      self.w["_proj_input.0.bias"]), 0.0)
+        hidden = hidden + self._position_table(positions)
+
+        mask = self._mask(positions, num_tokens)
+        for layer in range(POSE_LAYERS):
+            hidden = nn.transformer_layer(hidden, self.w,
+                                          f"_transformer_model.layers.{layer}.",
+                                          POSE_TRANSFORMER_HEADS, mask)
+        return nn.linear(hidden, self.w["_proj_pose_output_logit.weight"],
+                         self.w["_proj_pose_output_logit.bias"])
+
+    def plan(self, pose_tokens: np.ndarray, local_root_values: mx.array,
+             pose_condition: mx.array, has_pose_condition: mx.array,
+             positions: int, num_tokens: int) -> mx.array:
+        """Return per-position codebook logits ``(positions, 80)``."""
+        if not nn._option("pose_fast", False):
+            return self._plan_reference(pose_tokens, local_root_values, pose_condition,
+                                        has_pose_condition, positions, num_tokens)
+        tokens = pose_tokens if isinstance(pose_tokens, mx.array) else mx.array(pose_tokens)
+        if nn._option("pose_compile", False):
+            if self._stage is None:
+                self._stage = nn.StageCache("pose", self._core)
+            return self._stage((positions, num_tokens), tokens, local_root_values,
+                               pose_condition, has_pose_condition, positions, num_tokens)
+        return self._core(tokens, local_root_values, pose_condition, has_pose_condition,
+                          positions, num_tokens)
 
     @staticmethod
     def reshape_logits(logits: mx.array) -> mx.array:
