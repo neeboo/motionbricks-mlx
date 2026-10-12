@@ -548,6 +548,7 @@ shasum -a 256 /tmp/step-gpu.json /tmp/step-cpu.json out/plan-mlx-gpu.json out/pl
 |---|---|
 | GPU plan sha256 | `ccda1952c967c8d7e893a795908f7de278f2acda1ce5ba1e1889692a8904a7c5` = `out/plan-mlx-gpu.json` |
 | CPU plan sha256 | `262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a` = `out/plan-mlx.json` |
+| 页面默认路径 vs 验收 CLI 路径 | `/api/plan?style=walk&seed=1&move=0,0&facing=0,1&reset=1` 的 `world_positions_xyz`（4488 个数）与 `mlx_plan.py` 的 `session-initial` 步**逐位相同**（`np.array_equal`），`root_travel_metres` 也相同（0.088814）；回包 15 个 key，无 `switch`/`placed_targets`/`target_hit`（`artifacts/switch-run/viewer-default-vs-cli.txt`） |
 | 跨版 5 seed × 6 步（对 `c81d8ee`，`/tmp/r5/campaign.py` 原样复用） | `pose.tokens` **30/30**、`sampling_uniforms` **30/30**、时长 token **30/30**，**0/2416** 决策不同，动作偏差 **0.000e+00**（root 与 rotation 都是 0） |
 | `pytest -q` | **278 passed, 1 skipped**（第 8 轮起点 242/1，只增） |
 
@@ -591,3 +592,356 @@ base64 解码后重算 sha256 并与证据比对）：
 7. **容差是自己定的**（`TARGET_TOLERANCES`），不是参考实现给的——参考实现里没有"命中度"
    这个概念，所以我用 `mlx_align` 的**口径**（最大绝对误差 / 米 / 度 / 取最坏）加自己的阈值，
    依据写在表里（地板的一个数量级以上 + 约 20% 步幅）。第 3 节那张包络表就是它的**可证伪面**。
+
+---
+
+# 追加（第 10 轮）：把"切换"做成一等公民 —— 条件化当前状态，并给出可证伪的对照
+
+**一句话**：A→B 不是"生成 A、再生成 B、硬拼"，而是**用 A 此刻的那 4 帧（连它差分出来的速度）
+去条件化 B 的生成**；接缝处的位置差从对照臂的 **40.8 mm / 317.3 mm** 降到 **1.4 mm 以内**，
+根速度跳变从 **3.1–6.5× 段内 p95** 降到 **0.47× 以内**；**但加速度那一行两种方法都做不到
+"≤ 段内 p95"**，如实报（第 3 节末与第 10 节）。
+
+起法不变，仍然**只有一个端口**（第 7 节）：
+
+```bash
+cd ~/dev/motionbrick-mlx
+./.venv/bin/python scripts/mlx_viewer.py --port 8848 --device gpu
+```
+
+## 1. 切换在机制上到底是什么（不是新模块，是"不 reset"）
+
+第 9 轮已经把边界查清楚了：模型的 transition boundary 是**固定 8 帧**（`models/schema.py:24-26`，
+参考 `src/root.cpp:366` "4 start + 4 end"）——
+
+| 段 | 帧 | 谁造 | 切换时变不变 |
+|---|---|---|---|
+| start | 0..3 | `encode_context`（`src/motion_rep.cpp:180-250`） | **不变**：就是 A 现在的那 4 帧 |
+| target | 4..7 | `build_constraints`（`src/agent.cpp:289-330`） | **变**：改由 B 的 style 片段造 |
+
+`local_root`（4 宽）是这 8 帧窗口的有限差分（`src/agent.cpp:322-334`；`encode_context` 里是
+`src/motion_rep.cpp:290-301`），所以**窗口里能表达的是位置和一阶差分（速度）**。
+这句话决定了本轮能做到什么、做不到什么：**窗口里没有加速度通道**。
+
+于是"切换"的实现只有一句话：
+
+> **`Agent.advance(n)` 把上下文挪到 A 的第 n 帧，然后 `Agent.plan(command, B_style)` —— 不 reset。**
+
+`build_constraints` 自己会读到上下文的速度（`velocity_x/z`、`heading_velocity`，
+`src/agent.cpp:229-241`）并把它带进 frames 4..7 的 spring；`apply_context_blend`
+（`src/agent.cpp:354-379`，权重 0.3/0.433/0.567/0.7）再把生成片段的前 4 帧往 A 的位姿上拉。
+这两件事都不是本轮新写的——本轮做的是**让它们有机会发生**。
+
+**朴素对照（证伪臂）**：A、B **各自独立生成**（各自从自己 style 的种子重新播种——这正是
+第 8/9 轮换 style 时的行为），再拼起来。为免被说成"稻草人"，对照臂里最慈善的版本还会把 B 的
+片段**平移旋转到 A 的接缝位姿**（`restore_world`），所以它在 root 位置上是"零误差"的起手；
+它的关节构型和关节角速度仍然是 B 自己的 —— 那正是"独立生成"不可消除的痕迹。
+
+两条臂**只差这一个决定**，所以这是对照，不是演示。
+
+**新增文件**（都在允许范围内）：
+
+| 文件 | 作用 |
+|---|---|
+| `src/motionbricks_mlx/data/switch.py`（新） | 腿/接缝的度量与拼装：`seam_metrics`、`Leg`、`SwitchPlan`、`join_legs`、`Switcher`（两条臂都在这里） |
+| `scripts/mlx_switch.py`（新） | CLI：写 plan 文档、跑对照矩阵、跑 C 线质量门。`--out` 与 `mlx_plan.py` 一样**必填** |
+| `scripts/mlx_viewer.py`（追加分支） | `/api/plan` 新增 `switch` / `sequence` / `seams`，回包多一个 `switch` 块 |
+| `viewer/**`（追加） | 侧栏 SWITCH 面板、HUD 两格、画布上的青色接缝柱、`Hard cut (control)` 勾选框 |
+| `tests/test_mlx_switch.py`、`tests/test_viewer_switch.py`（新） | 17 + 13 个测试（第 8 节） |
+
+**判据是从任务书抄下来的，不是我造的**（`switch.py:SEAM_CRITERION` 原文存在代码里）：
+
+```
+seam |dq| <= max(in-segment p95 |dq|)   for q in {position, velocity, acceleration}
+```
+
+接缝处的 `|dq|` 和段内的 `|dq|` **是同一个有限差分**——都是"相邻两帧之间 q 的变化量"——
+所以两边同量纲、同含义，"≤ p95" 是字面意义上的比较。位置另给一条同形状的判据
+`seam |dp| <= p95 per-frame |dp|`（接缝的位置差不超过该片段自己一帧的正常位移）。
+容差口径沿用 `scripts/mlx_align.py`：**最大绝对误差**、位置用米、角度用度、取被比较块的最坏值
+（关节那两行是"每个关节各自算比值，取最坏的那个关节"）。
+
+## 2. 怎么用
+
+### HTTP（`curl`，验收走这条）
+
+```bash
+# 一次现场切换：从当前片段第 20 帧切到 walk_zombie
+curl -s --get "http://127.0.0.1:8848/api/plan" \
+  --data-urlencode "style=walk" --data-urlencode "seed=1" \
+  --data-urlencode "move=0,1" --data-urlencode "facing=0,1" --data-urlencode "reset=1" >/dev/null
+curl -s --get "http://127.0.0.1:8848/api/plan" \
+  --data-urlencode "style=walk_zombie" --data-urlencode "advance=20" \
+  --data-urlencode "switch=1" \
+| ./.venv/bin/python -c 'import json,sys;d=json.load(sys.stdin);s=d["switch"];print(s["chain"],s["seams"][0]["metrics"]["root_position_m"])'
+
+# A->B->A 拼成一段，一次回包，缝全测
+curl -s -X POST -H 'content-type: application/json' \
+  -d '{"style":"walk","move":[0,1],"facing":[0,1],"advance":20,
+       "sequence":["walk_zombie","walk"],"seams":[20,20]}' \
+  http://127.0.0.1:8848/api/plan
+```
+
+新增参数（都是追加的；不带它们时请求形状与回包 key 与第 9 轮**逐字相同**）：
+
+| 参数 | 默认 | 含义 |
+|---|---|---|
+| `switch` | `0` | 1 = **切换进** `style`：保留上下文，只换 target 窗口的 style。不带它时换 style 仍然是"reseed"（也就是对照臂） |
+| `sequence` | 空 | `"B,A"`：一次回包返回整段 A→B→A（`style` 是 A） |
+| `seams` | 空 | 每个 `sequence` 项的接缝帧（省则用 `advance`） |
+
+回包多一个 `switch` 块（`mode`/`conditioned`/`from_style`/`chain`/`seam_at`/`legs`/`seams`/
+`criterion`/`worst_seam_ratio`/`all_seams_within_p95`）。`legs` 给每段在拼接片段里的帧区间，
+`seams[i].joined_frame` 给接缝在拼接片段里的帧号 —— 页面就是用这两个画接缝柱的。
+
+### 页面
+
+侧栏新增 **SWITCH STYLE MID-MOTION** 面板：
+
+* **下拉 + `Switch now`**：**走着的时候点它即可**。它把两个下拉都切到目标 style，
+  下一次 `/api/plan` 带 `switch=1` + `advance=当前播放帧`；
+* **`Play A → B → A`**：从当前位置起，一次请求拿回整段 A→B→A（含两处缝），当普通片段播；
+* **`Back to command`**：退回命令驱动（清掉切换状态）；
+* **`Hard cut (control)`**：把切换退回第 8/9 轮的行为（reseed）——**证伪臂就在页面上**，
+  勾上之后同一时刻的角色位置差 0.57 m（第 6 节）；
+* **HUD 两格**：`SEAM GAP`（接缝位置差，mm）与 `SEAM JUMP`（六行比值里最坏的一行）。
+  侧栏 `#switch-status` 给全部数字与判据原文。**每一条都是服务器自己量出来的**，
+  所以截图里就带着连续性的证据。
+
+**URL 预置**（与 `?style=`/`?targets=` 同一套机制，无合成输入）：
+`?style=walk&move=0,1&ab=walk_zombie&seam=20` 开机就规划整段 A→B→A；
+`?switch=walk_zombie&at=20` 开机走**现场切换**那条路（先规划 A，再切）；
+`?t=<帧>&paused=1` 把播放头钉在某一帧上（第 6 节的画面就是这么拍的）；
+`?naive=1` 勾上对照臂。
+
+### CLI
+
+```bash
+# A->B->A：写 plan 文档（形状与 mlx_plan.py 同，多一个 switch 块）
+./.venv/bin/python scripts/mlx_switch.py --style walk --to walk_zombie --back walk \
+    --seed 1 --seam-at 20 --seam-at-back 20 --out /tmp/switch-aba.json
+
+# 对照矩阵 + C 线质量门（本轮报告里两张表都是这条命令产的）
+./.venv/bin/python scripts/mlx_switch.py --style walk --to walk_zombie --back walk \
+    --control --quality --quality-sweep --seeds 1,7 --seam-frames 12,20,28 \
+    --out artifacts/switch-run/switch-aba.json --report artifacts/switch-run/report.json
+```
+
+## 3. 朴素对照 vs 本方法：连续性对照表
+
+**48 个格子**（8 对 style × seed 1/7 × 接缝帧 12/20/28），同一进程内**每个格子两条臂交错测量**。
+比值 = 接缝处的 `|Δq|` ÷ 段内 `p95(|Δq|)`（同一差分的同一统计量）。
+
+| 量 | 判据 | **本方法（条件化）** | 硬切（贴到接缝位姿） | 硬切（不贴） |
+|---|---|---|---|---|
+| root 位置差（48 格最大） | ≤ 一帧 p95 | **1.383 mm** | 116.654 mm | 622.346 mm |
+| 最坏关节位置差（48 格最大） | 同上 | **15.352 mm** | 833.761 mm | 994.312 mm |
+| root 速度比 中位 / 最大 / 超判据格数 | ≤ 1 | **0.302 / 0.472 / 0/48** | 3.084 / 6.455 / 46/48 | 3.032 / 6.454 / 46/48 |
+| root 加速度比 中位 / 最大 / 超 | ≤ 1 | **0.256 / 0.640 / 0/48** | 0.508 / 1.240 / 4/48 | 0.505 / 1.242 / 4/48 |
+| 关节角速度比 中位 / 最大 / 超 | ≤ 1 | 1.158 / 2.315 / **32/48** | 3.788 / 4.982 / 48/48 | 3.788 / 4.982 / 48/48 |
+| 关节角加速度比 中位 / 最大 / 超 | ≤ 1 | 1.398 / 3.301 / **42/48** | 1.969 / 3.777 / 48/48 | 1.969 / 3.777 / 48/48 |
+
+**逐项读法（这才是诚实的那一半）**：
+
+* **位置：三条都达标，而且是数量级。** 本方法的 root 接缝差 48 格最大 **1.383 mm**，
+  最坏关节位置差 **15.4 mm**（比该片段一帧的正常位移还小，`position_within_one_frame` 48/48 为真）；
+  对照臂即使被贴到接缝位姿上，root 差仍有 **5.8–116.7 mm**（y/骨盆高度那一项它修不了），
+  关节差 **0.44–0.83 m**；不贴的那条差 **0.13–0.62 m**，是货真价实的瞬移。
+* **root 速度：达标 48/48。** 本方法 0.302（中位）、最坏 0.472；对照臂 46/48 超判据，最坏 6.46×。
+* **root 加速度：达标 48/48，但这不是区分度**——对照臂也只有 4/48 超判据
+  （它的段内 p95 本身就被自己的起步抖动抬高了）。
+* **关节角速度：改善了 3.3×（中位 3.788 → 1.158），但"≤ 段内 p95"没有全部达标（32/48 超）。**
+* **关节角加速度：不区分**（中位 1.398 vs 1.969，最大 3.301 vs 3.777），两边都几乎全超。
+
+**这个残差是机制的，不是调参没调好。** 用 **A→A**（同 style 的**普通边走边重规划**，
+没有换 style）当**地板控制**：那 6 个格子里，本方法的关节角速度比中位 **1.131**、最大 **2.174**，
+关节角加速度中位 **1.265**、最大 **1.735**。也就是说——**这个 4 帧窗口条件化机制本身**
+（第 8 轮就在跑的那条路）在关节角速度/角加速度上就做不到"≤ 段内 p95"，地板是 ~1.1–1.7。
+A→B（42 个异 style 格子）的 1.158 / 1.440 落在这个地板上，**多出来的部分不是"切换"造成的**。
+
+根因可以从前言直接推出来：**窗口 4 帧只携带位置与一阶差分（速度）；加速度在条件通道里不存在**。
+所以"位置 + 速度"能闭合，"加速度"不能。这既是本轮的结论，也是它的边界。
+
+**A→B→A 那一段的实际数字**（`walk → walk_zombie → walk`，seed 1，缝 20/20，`move=0,1`，
+`artifacts/switch-run/switch-aba.json`，84 帧、163.2 ms/次）：
+
+| 缝 | root 位置差 | 最坏关节位置差 | Δv / p95 | Δa / p95 | 关节 Δω / p95 | 关节 Δα / p95 |
+|---|---|---|---|---|---|---|
+| @20 `walk→walk_zombie` | **0.1701 mm** | 13.312 mm | 0.076 / 0.229 m/s（**0.333×**） | 1.776 / 7.645 m/s²（**0.232×**） | 118.71°/s（0.826×，**0/34** 关节超） | 8307°/s²（1.663×，2/34 超） |
+| @40 `walk_zombie→walk` | **0.2753 mm** | 9.385 mm | 0.160 / 0.259 m/s（**0.616×**） | 3.673 / 10.873 m/s²（**0.338×**） | 100.39°/s（1.025×，1/34 超） | 3405°/s²（1.650×，4/34 超） |
+
+**结论**：位置与速度的"无缝"是被数字证明的（毫米级、比值 <1、对照臂 40–600 mm）；
+关节角速度是**大幅改善但未达标**；关节角加速度**两种方法一样差**，是机制边界。
+两种方法**量出来不一样**（位置差 230×、root 速度比 10×），所以这个"无缝"确实起了作用 ——
+不是任务书里那句"如果两种方法量出来一样就停下"的情形。
+
+## 4. 质量门（切换前后有没有变差）
+
+只读 import `motionbricks_mlx.eval`（`metrics.py` 的 1/2/3 号指标与 `thresholds.py` 的阈值表），
+一行没改、也没新造阈值。48 个格子，三种腿各测一遍**同一 style、同一 seed、同一 44 帧长度**的片段，
+只有"从哪个上下文规划"不同：
+
+| 腿 | 绝对 C 线门通过 | 中位脚滑 |
+|---|---|---|
+| `fresh`（从 style 重新播种） | **42/48** | 0.962 m |
+| `replan`（同 style，从自己片段中段续规划 = 第 8 轮那条路） | **28/48** | 1.036 m |
+| `switch`（从 A 的中段续规划 = 本轮） | **25/48** | 1.036 m |
+
+失败项分布：`fresh` 6 个全是 `jerk_p95_deg`；`replan` 18×`foot_slide_max_m` + 8×`jerk_max_deg`
++ 4×`jerk_p95_deg`；`switch` 21×`foot_slide_max_m` + 6×`jerk_max_deg`。
+
+**把成本拆开**（同格配对，所以是比值而不是绝对值）：
+
+* **中段续规划本身**（`replan / fresh`）：脚滑中位 **1.208**（最大 1.905）、jerk p95 **1.013**、
+  jerk max **1.102**。这是**第 8 轮"边走边重规划"就已经有的**代价，不是本轮引入的。
+* **换 style 本身**（`switch / replan`）：脚滑中位 **1.040**、jerk p95 中位 **1.000**（最大 1.802）、
+  jerk max 中位 **1.000**（最大 5.646）。**分布上等于没变**；变的是单帧极值。
+* 48 个格子里有 **9 个**，切换会让某条指标失败而同 style 续规划不失败。
+
+**接缝局部 vs 片段内部**（同样用 ±8 帧的**同宽窗口**：接缝窗口 vs 该片段所有内部窗口的 p95）：
+
+| | jerk p95 比值 中位 / 最大 / 超 1 的格数 | 脚滑超内部 p95 | 穿地超内部 |
+|---|---|---|---|
+| **本方法** | **0.954 / 1.584 / 19/48** | **3/48** | 5/48 |
+| 硬切对照 | **10.917 / 26.077 / 48/48** | 18/48 | 21/48 |
+
+**读法**：接缝处的抖动**中位比片段内部还低（0.954×）**，19/48 略高于内部 p95（最多 1.58×）；
+硬切对照在**全部 48 个格子里**都是 2.8–26× 的爆点。**所以"切换没有让质量变差"这句只在
+"中段续规划本来就有的代价"这个意义上成立**：相对同 style 续规划，切换的脚滑与 jerk p95 中位数
+都 ≈1.00；但绝对 C 线门会失败更多（25/48 vs 42/48，其中约 2/3 是续规划路径就有的）。
+
+## 5. 持续可用性：切换不是一次性事件
+
+第 9 轮的缺口是"一次目标规划是一次性的，后续自动重规划退回命令式"。本轮把它和切换一起修了，
+证据在 `artifacts/switch-run/stickiness.txt`（同一条 8848 上跑的）：
+
+```
+1. reset=1 walk                    -> root_first_frame [0.0,    0.7802, 0.0   ]
+2. switch=1 walk_zombie advance=20 -> root_first_frame [0.0445, 0.7298, 0.3115]  chain [walk, walk_zombie]
+3. 普通重规划（不带任何 flag）      -> root_first_frame [0.0731, 0.7441, 0.8752]   <- 继续从 B 出发
+4. 再 switch=1 walk advance=20     -> root_first_frame [0.0853, 0.732,  1.2757]  chain [walk_zombie, walk]
+5. 对照：换 style 不带 switch       -> root_first_frame [0.0,    0.7708, 0.0   ]   <- reseed，回到 B 自己的原点
+```
+
+第 3 行是关键：**切换之后，一次完全普通的 `/api/plan`（既没有 `switch` 也没有 `sequence`）
+仍然从 B 的当前位置继续**，而不是回到 B 自己的原点。服务器里这件事靠一个字段
+（`_agent_style` = "当前动作所处的 style"）——上一版只在 reseed 分支里更新它，
+所以切换之后第一次"不带 flag 的同 style 请求"会**重新播种**（那正是"退回命令式"）。
+本轮在两条分支上都更新它，并且重规划路径按 `switch=1` 发送，两处都钉在测试里。
+
+页面上同一件事可以从 DOM 读出来（`--dump-dom`，无合成输入）：
+`data-mlx-plan-log="1:walk:reset/adv0:44f | 2:walk_zombie:switch/adv20:44f/live"` ——
+第 2 条请求确实是 `switch/adv20`，不是 `reset/adv0`。
+
+第 9 轮"目标只生效一次"那个缺口也一起修了：目标面板多了 **Keep chasing while walking**
+（默认勾上），勾着时后续每次自动重规划都继续带 `targets`；取消勾选即停止追（点还留着）。
+
+## 6. A→B→A 的实际画面
+
+`artifacts/switch-shots/`（无头 Chrome，`--screenshot`，**只做导航与等待，不点界面、不合成输入**；
+每张 PNG 都记了 sha256）：
+
+| 文件 | 内容 |
+|---|---|
+| **`aba.gif`** | **主画面**：A→B→A 整段 84 帧的 GIF（每 2 帧取 1，共 42 帧，560×384，70 ms/帧 = 14.3 fps，总长 2.94 s，**1.63 MiB**；真值是 2 帧 @30fps = 66.7 ms，GIF 的时间粒度只有 10 ms）。底部字幕带写明当前在哪条腿，两处接缝有青色竖标与 `SEAM A -> B` / `SEAM B -> A`；42 帧两两都不重复，源 PNG 的 sha256 在 `artifacts/switch-run/gif-digests.txt` |
+| `seam1-ab-1440x900.png` | 接缝 1 那一帧（`?t=20`）：HUD `STYLE walk → walk_zombie → walk`、`SEAM GAP 0.28 mm`、`SEAM JUMP 1.66×`，两条青色接缝柱与地面圆环都在画面里 |
+| `seam2-ba-1440x900.png` | 接缝 2（`?t=40`） |
+| `aba-walked-1440x900.png` | 整段末尾（`?t=83`）：`WALKED 2.09 m`、`ROOT Z 2.04 m` —— 地面轨迹整条穿过了两处接缝 |
+| `tall-1440x1180.png` | 侧栏 SWITCH 面板整块可见 |
+| **`live-switch-1440x900.png`** | **现场切换**（`?switch=walk_zombie&at=20&t=20`）：`SEAM GAP 0.17 mm`、`SEAM JUMP 1.66×`、`WALKED 0.58 m`、`ROOT Z 0.88 m`，一根接缝柱 |
+| **`hardcut-control-1440x900.png`** | **证伪臂**（同一 URL + `?naive=1`）：`SEAM GAP —`、`SEAM JUMP —`、**没有接缝柱**、`WALKED 0.31 m`、`ROOT Z 0.30 m` |
+
+后两张是**同一时刻、同一相机、只差一个 `naive` 参数**的一对：切换后 20 帧，
+角色在 z=0.88 m 还是 z=0.30 m，差 **0.57 m**；页面的 `plan-log` 分别是
+`2:walk_zombie:switch/adv20` 与 `2:walk_zombie:reset/adv0`。
+
+**GIF 是逐帧钉住的**：每一帧都是 `?t=<帧>&paused=1` 的一次真实导航，页面在 seek 时把位姿与相机
+迭代收敛（200 次 lerp）而**不是**等下一个 rAF —— 虚拟时间预算会把 rAF 饿死，那样拍到的会是
+"最后一个回调恰好画的那一帧"。同一 URL 连拍 4 次，**去掉 HUD 的那块视口区域逐像素完全相同（0/222000 px）**；整图有 113–202 px
+不同，全部落在 HUD/侧栏里**故意带上的本次实时耗时数字**上：**位姿可复现，PNG 不逐字节可复现**。
+
+## 7. 一个服务、一个端口
+
+第 8 轮的 8848 与第 9 轮的 8859 **不再并存**：8859 的进程在本轮开始时已经不在（只剩 8848），
+本轮把 8848 那个也停掉，用**最终这一版代码**只起**一个**进程，第 8/9/10 轮的功能都在这一个端口上。
+
+| 项 | 值 |
+|---|---|
+| URL | `http://127.0.0.1:8848/` |
+| PID | **`65252`**（也写在 `artifacts/switch-run/server.pid`；日志首行自带 `(pid 65252)`） |
+| 日志 | `artifacts/switch-run/server.log` |
+| 绑定 | `127.0.0.1:8848`（`--host` 只接受 `127.0.0.1`） |
+| 停止 | `kill "$(lsof -nP -iTCP:8848 -sTCP:LISTEN -t)"`，或受管任务 `job_kill <job_id>` |
+
+启动日志（`artifacts/switch-run/server.log`）：
+
+```
+loading /Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx on mlx-gpu ...
+ready: cold start 293.9 ms, 15 styles, warm clip 44 frames
+viewer: http://127.0.0.1:8848/  (pid 65252)
+```
+
+**为什么仍然是单线程**：MLX 的 GPU stream 是 thread-local 的，`ThreadingHTTPServer` 的 worker
+里跑 `Agent.plan` 会直接 abort 掉进程（第 8 轮 §1 记过）。测试里的 HTTP 层因此绑 **CPU** 档
+（和 `tests/test_viewer_targets.py` 一样），协议层与服务层才有覆盖。
+
+## 8. 一致性、测试、跨版门
+
+```
+./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/r10-step-gpu.json
+./.venv/bin/python scripts/mlx_plan.py --device cpu --out /tmp/r10-step-cpu.json
+shasum -a 256 /tmp/r10-step-gpu.json /tmp/r10-step-cpu.json out/plan-mlx-gpu.json out/plan-mlx.json
+./.venv/bin/python -m pytest -q
+```
+
+| 检查 | 实测 |
+|---|---|
+| GPU plan sha256 | `ccda1952c967c8d7e893a795908f7de278f2acda1ce5ba1e1889692a8904a7c5` = `out/plan-mlx-gpu.json` **逐字节相同** |
+| CPU plan sha256 | `262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a` = `out/plan-mlx.json` **逐字节相同** |
+| 跨版 5 seed × 6 步（对 `c81d8ee`，`/tmp/r5/campaign.py` 原样复用） | `pose.tokens` **30/30**、`sampling_uniforms` **30/30**、时长 token **30/30**、**0/26576** 决策不同、动作偏差 **0.000e+00**（root 与 rotation 都是 0） |
+| `pytest -q` | **308 passed, 1 skipped**（第 9 轮起点 278/1，只增） |
+
+新增测试：`tests/test_mlx_switch.py`（17：比值策略的两个零情形、六行比值键、
+连续接缝/速度跳变/位置差/加速度跳变各自被正确归行、短输入拒绝、JSON 可表示、
+拼接片段的帧区间与缝帧号、以及真机上的"条件化 vs reseed 必须不同""位置差 ≤1.5 mm 而对照 >3×"
+"地板控制"）；`tests/test_viewer_switch.py`（13：无 flag 请求的调用形状与回包 key 集合不变、
+`switch`/`sequence`/`seams` 的转发、空值不转发、未知 style 是 404、页面确实带上了这些控件、
+真机上切换的缝被量出来且下一拍继续从 B 出发、不带 flag 的换 style 仍然瞬移）。
+
+## 9. load
+
+机器不空闲（桌面进程 mihomo / WindowServer / Chrome / DSH renderer / Lark）。本轮全程 1 分钟
+load average 在 **8.1–16.5** 之间；对照矩阵与质量门是**同进程、同格子交错配对**的比值，
+所以绝对值被抬高这件事不进入结论；跨版门与 sha256 是逐字节判据，与负载无关。
+
+| 时刻 | load 1min | 出处 |
+|---|---|---|
+| 起单端口服务（最终那次） | **12.68** | `artifacts/switch-run/server-load.txt` |
+| 默认路径 sha256 + 跨版门 | **12.40**（1/5/15 min: 12.40/13.58/13.27） | `artifacts/switch-run/verify.log`、`cross-version.txt` 首行 |
+| 对照矩阵 + 质量门（48 格，两趟，约 37 s） | **15.65**（15.65/14.51/14.75） | `artifacts/switch-run/run-full.log` 首行 `uptime` |
+| `pytest -q`（308 passed） | **7.33**（7.33/13.80/13.33） | 本节正文的那次运行 |
+| 画面拍摄（42 帧 + 6 张静帧，约 2 min） | **7.45–12.7** | `artifacts/switch-run/shoot.sh` 运行期间 |
+
+## 10. 诚实边界（本轮新增）
+
+1. **加速度那一行没做到，而且两种方法一样差。** 关节角加速度的接缝比中位 1.398 vs 对照 1.969，
+   都远在 1 以上；`all_seams_within_p95` 在本轮所有主配置里都是 **false**。
+   页面上 `SEAM JUMP` 显示的就是这六行里最坏的一行，所以它常常 >1 并标红——**这是如实显示**，
+   不是没调好。机制上的原因见第 3 节末：4 帧窗口里没有加速度通道。
+2. **关节角速度"改善但未达标"**：32/48 个格子仍高于段内 p95。地板控制（A→A，同 style 续规划）
+   自己就是 1.13–2.17，所以这是机制地板，不是切换引入的。
+3. **绝对质量门上切换比"重新播种"差**：25/48 vs 42/48。约 2/3 的差距来自**第 8 轮就存在的**
+   中段续规划路径（28/48）；换 style 本身在 9/48 个格子上多失败一条指标。
+   中位脚滑在 `replan` 与 `switch` 之间**完全相同**（1.036 vs 1.036 m）。
+4. **对照臂的"慈善版"是我选的**：把 B 贴到 A 的接缝位姿（`restore_world`）比真实硬切更宽容，
+   因为真实硬切还会瞬移 0.13–0.62 m。两条都报了（`naive_aligned` / `naive_raw`），
+   表里主列用的是更宽容的那条。
+5. **接缝的"位置差"是 root + 最坏关节，不是逐关节。** 最坏关节 15.4 mm 已经小于该片段一帧的
+   正常位移，但单个关节仍可能比它自己的 p95 大——关节那两行是逐关节取最坏比值的。
+6. **PNG 不逐字节可复现**（HUD 带实时耗时）；GIF 的**帧**是钉住的（`?t=&paused=1`），
+   pose 可复现（同 URL 4 次拍摄视口差 ≤11 px）。
+7. **`?t=` / `?paused=1` / `?ab=` / `?switch=` / `?naive=` 是地址栏参数**，不是合成输入；
+   它们只预置一次会话，和 `?style=` 同一套机制。页面的 `Hard cut (control)` 是**勾选框**，
+   勾上之后行为退回第 8/9 轮（reseed），本轮所有"对照"数字都是代码里那条臂算的，不是勾出来的。
+8. **没有做**：切换时的碰撞/脚步 IK、把 4 帧窗口换成更长的窗口（那要改模型条件通道，
+   属于训练侧，本轮范围内不动）、多人会话（仍然一个进程一个 agent）。

@@ -143,3 +143,38 @@ input[type="number"], input[type="text"] { width:100%; color:#f2f6fb; background
 }
 #mlx-target-hit[data-state="ok"] { color:#7ef0c0; }
 #mlx-target-hit[data-state="miss"] { color:#ff9d7a; }
+
+/* ------------------------------------------------------------------ */
+/* Switch style mid-motion (this round).                              */
+/*                                                                    */
+/* A sidebar panel plus the in-canvas cyan seam posts. `#7ad7ff` is   */
+/* used only for the seam, so the post, the HUD value and the legend  */
+/* swatch all read as one thing.  Same palette as the block above;    */
+/* only the accent changes.                                           */
+/* ------------------------------------------------------------------ */
+.seam-swatch { color:#7ad7ff; background:#7ad7ff; transform:rotate(90deg); }
+#mlx-switch-panel {
+  margin:16px 0 0; padding:12px; border:1px solid #223446; border-radius:10px;
+  background:#121820;
+}
+#mlx-switch-panel .mlx-target-title { color:#9fd8ff; }
+#mlx-switch-panel .mlx-target-help { color:#8296a8; }
+#mlx-switch-panel .mlx-target-help b { color:#bfe6ff; }
+#mlx-switch-panel .mlx-row { grid-template-columns:minmax(0,1fr) auto; margin-top:8px; }
+#mlx-switch-panel select { padding:8px; font-size:12px; }
+#mlx-switch-panel button {
+  color:#d6efff; background:#14212c; border:1px solid #2f5b78;
+  border-radius:8px; padding:9px 11px; font:inherit; font-size:12px; cursor:pointer;
+}
+#mlx-switch-panel button:hover { background:#1b2c3a; border-color:#4f97c4; }
+#mlx-switch-panel button[aria-pressed="true"] { background:#14506f; border-color:#7ad7ff;
+  color:#f2fbff; }
+#switch-status {
+  margin:10px 0 0; font-size:11px; line-height:1.45; font-variant-numeric:tabular-nums;
+  color:#a8c6da; overflow-wrap:anywhere;
+}
+#switch-status[data-state="ok"] { color:#7ef0c0; }
+#switch-status[data-state="miss"] { color:#ff9d7a; }
+#hud-seamgap, #hud-seamjump { color:#7ad7ff; }
+#hud-seamgap[data-state="miss"], #hud-seamjump[data-state="miss"] { color:#ff9d7a; }
+#hud-seamgap[data-state="ok"], #hud-seamjump[data-state="ok"] { color:#7ef0c0; }

@@ -17,6 +17,8 @@
         <span class="hud-key">walked</span><span class="hud-value" id="hud-walked">0.00 m</span>
         <span class="hud-key">root z</span><span class="hud-value" id="hud-rootz">—</span>
         <span class="hud-key">target</span><span class="hud-value" id="hud-target">—</span>
+        <span class="hud-key">seam gap</span><span class="hud-value" id="hud-seamgap">—</span>
+        <span class="hud-key">seam jump</span><span class="hud-value" id="hud-seamjump">—</span>
         <span class="hud-key">clips</span><span class="hud-value" id="hud-clips">0</span>
       </div>
     </section>
@@ -29,11 +31,31 @@
       <div class="legend" aria-label="Skeleton legend">
         <span><i class="animated-swatch"></i>Animated model</span>
         <span><i class="target-swatch"></i>Target keyframes</span>
+        <span><i class="seam-swatch"></i>Switch seam</span>
       </div>
 
       <div id="live-style">
         <label for="style-select">Upstream pose style</label>
         <select id="style-select" aria-label="Motion style"></select>
+      </div>
+
+      <div id="mlx-switch-panel" aria-label="Switch motion style">
+        <p class="mlx-target-title">Switch style mid-motion</p>
+        <p class="mlx-target-help">The switch keeps the four frames the model is
+          currently standing on (including the velocity they carry) and only changes
+          which style supplies the target window. <b>Switch now</b> works while the
+          character is walking and stays in effect for every later replan.</p>
+        <div class="mlx-row">
+          <select id="switch-select" aria-label="Style to switch to"></select>
+          <button id="switch-go" type="button">Switch now</button>
+        </div>
+        <div class="mlx-row">
+          <button id="switch-play" type="button">Play A &#8594; B &#8594; A</button>
+          <button id="switch-clear" type="button">Back to command</button>
+        </div>
+        <label class="mlx-checkline"><input id="switch-naive" type="checkbox">
+          Hard cut (control)</label>
+        <p id="switch-status" role="status" aria-live="polite">no switch yet</p>
       </div>
 
       <div class="mlx-field">
@@ -79,6 +101,8 @@
           <button id="mlx-target-clear" type="button">Clear targets</button>
           <button id="mlx-target-here" type="button">+1 m ahead</button>
         </div>
+        <label class="mlx-checkline"><input id="mlx-target-keep" type="checkbox" checked>
+          Keep chasing while walking</label>
         <ol id="mlx-target-list"></ol>
         <p id="mlx-target-hit" role="status" aria-live="polite">no target placed yet</p>
       </div>
@@ -95,6 +119,7 @@
         <div><dt>Playback</dt><dd id="stat-playback">—</dd></div>
         <div><dt>Backend</dt><dd id="stat-backend">—</dd></div>
         <div><dt>Page → first pose</dt><dd id="stat-firstframe">—</dd></div>
+        <div><dt>Seam (last switch)</dt><dd id="stat-seam">—</dd></div>
       </dl>
 
       <p class="camera-help">Drag to orbit · wheel to zoom · W/A/S/D or the pad to move ·

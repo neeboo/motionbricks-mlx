@@ -712,3 +712,90 @@ DSH renderer、Chrome、Lark，另有上一轮遗留的 8848 viewer 进程）。
 `docs/motion-representation.md`、`README.md`、`NOTICE`、`LICENSE`、`pyproject.toml` 未动；
 `mlx_plan.py`/`mlx_align.py` 语义未动；参考仓库 `~/dev/motion-bricks-cpp` **全程只读**；
 无新依赖；**无 push**。
+
+---
+
+# Round 10（A 侧）：把"切换"做成一等公民 —— 条件化当前状态，并给出必须失败的对照
+
+**① 方法与实现**。切换不是新机制，是**第 9 轮查清的那 8 帧边界上少做一件事**：边界 frames 0..3 是
+当前状态（`encode_context`，`src/motion_rep.cpp:180-250`）、frames 4..7 是目标（`build_constraints`，
+`src/agent.cpp:289-330`），而 `local_root` 是这 8 帧的有限差分（速度就在窗口里）。
+所以 A→B = **`Agent.advance(n)` 到 A 的第 n 帧，然后 `Agent.plan(command, B_style)`，不 reset**：
+`build_constraints` 自己会把上下文速度带进 frames 4..7 的 spring，`apply_context_blend`
+（权重 0.3/0.433/0.567/0.7）再把生成片段前 4 帧往 A 的位姿上拉。上一版的阻塞点只有一行：
+`_agent_style != style` 就 reseed，等于把当前状态丢掉。
+
+新增/改动：`src/motionbricks_mlx/data/switch.py`（新，接缝度量与两条腿的臂）、
+`scripts/mlx_switch.py`（新，CLI + 对照矩阵 + 质量门，`--out` 必填）、
+`scripts/mlx_viewer.py`（追加 `switch`/`sequence`/`seams` 与 `switch` 回包块）、
+`viewer/**`（SWITCH 面板、HUD 的 `SEAM GAP`/`SEAM JUMP`、画布上的青色接缝柱、
+`Hard cut (control)` 勾选框）、两个新测试文件。判据是任务书那句原文，存在代码里：
+`seam |dq| <= max(in-segment p95 |dq|)  for q in {position, velocity, acceleration}`。
+
+**② 连续性对照表**（48 格 = 8 对 style × seed 1/7 × 缝帧 12/20/28，同进程逐格交错）：
+
+| 量（比值 = 接缝 |Δq| ÷ 段内 p95|Δq|） | 判据 | **本方法** | 硬切（贴接缝位姿） | 硬切（不贴） |
+|---|---|---|---|---|---|
+| root 位置差（最大） | ≤ 一帧 p95 | **1.383 mm** | 116.654 mm | 622.346 mm |
+| 最坏关节位置差（最大） | 同上 | **15.352 mm** | 833.761 mm | 994.312 mm |
+| root 速度比（中位/最大/超） | ≤1 | **0.302 / 0.472 / 0/48** | 3.084 / 6.455 / 46/48 | 3.032 / 6.454 / 46/48 |
+| root 加速度比 | ≤1 | **0.256 / 0.640 / 0/48** | 0.508 / 1.240 / 4/48 | 0.505 / 1.242 / 4/48 |
+| 关节角速度比 | ≤1 | **1.158 / 2.315 / 32/48** | 3.788 / 4.982 / 48/48 | 3.788 / 4.982 / 48/48 |
+| 关节角加速度比 | ≤1 | **1.398 / 3.301 / 42/48** | 1.969 / 3.777 / 48/48 | 1.969 / 3.777 / 48/48 |
+
+**位置与 root 速度三条达标且是数量级差**（位置 230×、root 速度 10×），所以这个"无缝"确实起了作用；
+**关节角速度大幅改善（3.3×）但未达标**；**关节角加速度不区分，两边都几乎全超**。
+地板控制（A→A，同 style 的普通边走边重规划）自己就是关节角速度中位 1.131 / 角加速度 1.265，
+所以残差是**机制地板**：4 帧窗口只携带位置与一阶差分，**条件通道里没有加速度**。
+
+**③ 质量门**（只读 import `motionbricks_mlx.eval` 的指标与阈值表，48 格同格配对）。
+绝对 C 线门：`fresh`（重新播种）**42/48**、`replan`（同 style 中段续规划）**28/48**、
+`switch` **25/48**。拆成本：中段续规划本身脚滑中位 **1.208×**/jerk p95 **1.013×**（第 8 轮就有的代价）；
+换 style 本身脚滑中位 **1.040×**、jerk p95 中位 **1.000×**。**接缝局部 vs 片段内部**（±8 帧同宽窗口）：
+本方法 jerk p95 比 **中位 0.954 / 最大 1.584 / 19/48 超 1**，硬切对照 **10.917 / 26.077 / 48/48 超 1**。
+**结论：切换没有让质量变差（相对它必然会有的中段续规划基线），但绝对门会比重新播种差，如实报。**
+
+**④ 持续可用性**（`artifacts/switch-run/stickiness.txt`，同一条 8848）：
+`reset=1 walk` → root_first_frame z=0.0；`switch=1 walk_zombie advance=20` → z=**0.3115**（接缝位姿），
+缝 0.17 mm；**之后一次完全普通的 `/api/plan`（无任何 flag）→ z=0.8752，继续从 B 出发**；
+再切一次 → 1.2757；对照（换 style 不带 switch）→ z=0.0（reseed 回 B 自己的原点）。
+修法：`_agent_style` 在两条分支上都更新（上一版只在 reseed 分支更新，所以切换后第一次
+不带 flag 的同 style 请求会重新播种 = "退回命令式"），页面重规划路径持续带 `switch=1`，
+两处都进了测试。第 9 轮"目标只生效一次"也一起修了（`Keep chasing while walking`，默认勾上）。
+
+**⑤ 画面**：`artifacts/switch-shots/aba.gif`（主画面，A→B→A 84 帧取 42 帧，560×384，
+67 ms/帧，**1.71 MiB**，字幕带标出当前腿、两处接缝有青色竖标）；`seam1-ab-1440x900.png`、
+`seam2-ba-1440x900.png`、`aba-walked-1440x900.png`（`WALKED 2.09 m`、`ROOT Z 2.04 m`）、
+`tall-1440x1180.png`；以及**同一时刻只差一个参数的一对**：`live-switch-1440x900.png`
+（`SEAM GAP 0.17 mm`、`ROOT Z 0.88 m`）与 `hardcut-control-1440x900.png`
+（`SEAM GAP —`、**无接缝柱**、`ROOT Z 0.30 m`，差 **0.57 m**）。
+每一帧都是 `?t=<帧>&paused=1` 的一次真实导航（无合成输入）；同一 URL 连拍 4 次，去掉 HUD 的视口区域
+**逐像素完全相同（0/222000 px）**，整图那 113–202 px 差全在 HUD 的实时耗时数字上。
+
+**⑥ 单端口**：8859 的进程在本轮开始时已不在；8848 那个也停掉了，**最终只起一个进程、一个端口**
+`http://127.0.0.1:8848/`，日志 `artifacts/switch-run/server.log`，PID 见日志首行与
+`artifacts/switch-run/server.pid`，停止 `kill "$(lsof -nP -iTCP:8848 -sTCP:LISTEN -t)"`。
+单线程的理由没变（MLX GPU stream 是 thread-local 的）。
+
+**⑦ 一致性**：GPU `ccda1952c967c8d7e893a795908f7de278f2acda1ce5ba1e1889692a8904a7c5`、
+CPU `262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a`，与
+`out/plan-mlx-gpu.json` / `out/plan-mlx.json` 逐字节相同；跨版 5 seed × 6 步对 `c81d8ee`
+（`/tmp/r5/campaign.py` 原样复用）**30/30 tokens、30/30 uniforms、30/30 时长、0/26576 决策不同、
+动作偏差 0.000e+00**；`pytest -q` **308 passed, 1 skipped**（起点 278/1，只增）。
+
+**⑧ load**：本轮 1 分钟 load average 7.3–16.5（桌面进程 mihomo/WindowServer/Chrome/DSH/Lark）。
+对照与质量门是**同进程逐格配对**的比值，绝对值被抬高不影响结论；sha256 与跨版门是逐字节判据。
+
+**⑨ 诚实边界**：见 `docs/VIEWER.md` 第 10 节（加速度两种方法一样差、关节角速度改善但未达标、
+绝对门比重新播种差、对照臂的"慈善版"是我选的、PNG 不逐字节可复现、地址栏参数不是合成输入、
+没做碰撞/脚步 IK/更长条件窗口）。**明确不说**：我没有验证切换后的动作"看起来像不像换风格"
+（那要人来判）；只报告了位置与速度的接缝数字，以及加速度的失败。
+
+**⑩ 红线遵守**：只新增/改动 `viewer/**`、`scripts/mlx_viewer.py`、`scripts/mlx_switch.py`（新）、
+`src/motionbricks_mlx/data/switch.py`（新）、`tests/test_mlx_switch.py`（新）、
+`tests/test_viewer_switch.py`（新）、`docs/VIEWER.md`（追加）、`docs/status-deepseek.md`（追加）、
+`artifacts/switch-run/**`、`artifacts/switch-shots/**`；`training/**`、`scripts/train_*.py`、
+`eval/**`、`scripts/eval_*.py`、`tests/test_eval_*.py`、`docs/motion-representation.md`、`README.md`、
+`NOTICE`、`LICENSE`、`pyproject.toml` **未动**；`mlx_plan.py`/`mlx_align.py` 语义未动；
+参考仓库 `~/dev/motion-bricks-cpp` **全程只读**；无新依赖（GIF 用系统 python3 的 Pillow，
+没有往 `.venv` 装东西）；**无 push**。

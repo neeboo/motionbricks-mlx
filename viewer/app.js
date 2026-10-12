@@ -56,6 +56,15 @@ const targetClear = document.querySelector('#mlx-target-clear');
 const targetHere = document.querySelector('#mlx-target-here');
 const targetList = document.querySelector('#mlx-target-list');
 const targetHitLine = document.querySelector('#mlx-target-hit');
+const targetKeep = document.querySelector('#mlx-target-keep');
+const switchPanel = document.querySelector('#mlx-switch-panel');
+const switchSelect = document.querySelector('#switch-select');
+const switchGo = document.querySelector('#switch-go');
+const switchPlay = document.querySelector('#switch-play');
+const switchClear = document.querySelector('#switch-clear');
+const switchNaive = document.querySelector('#switch-naive');
+const switchStatus = document.querySelector('#switch-status');
+const statSeam = document.querySelector('#stat-seam');
 const hud = {
   style: document.querySelector('#hud-style'),
   plan: document.querySelector('#hud-plan'),
@@ -63,6 +72,8 @@ const hud = {
   walked: document.querySelector('#hud-walked'),
   rootz: document.querySelector('#hud-rootz'),
   target: document.querySelector('#hud-target'),
+  seamgap: document.querySelector('#hud-seamgap'),
+  seamjump: document.querySelector('#hud-seamjump'),
   clips: document.querySelector('#hud-clips'),
 };
 const html = document.documentElement;
@@ -140,13 +151,38 @@ const state = {
   readyMs: null,
   pageStart: performance.now(),
   settleAt: null,
-  // --- placed target keyframes (this round) --------------------------------
+  // --- placed target keyframes (round 9) -----------------------------------
   // `placed` is the list the user owns, in *world* coordinates: the same frame
   // the server plans in, because the page draws `world_positions_xyz` verbatim.
   placed: [],
   placing: false,        // "Place target" armed: the next floor click drops a point
   lastHit: null,
   targetMarkers: null,
+  // Every plan request the page made, in order: the stickiness claim ("a switch
+  // keeps working") is then readable from one `--dump-dom` instead of inferred
+  // from a screenshot.  Capped so it cannot grow without bound.
+  planLog: [],
+  // Round 10: a target plan used to be one-shot -- the next automatic replan fell
+  // back to command-driven motion.  `targetsSticky` keeps chasing the placed
+  // points on every later replan while "Keep chasing while walking" is checked.
+  targetsSticky: false,
+  // --- switching (this round) ----------------------------------------------
+  // `switchMode` is the whole of "the switch keeps working": while it is true,
+  // every request (including the ones the playback loop fires by itself) carries
+  // `switch: true`, so a live replan keeps being conditioned on the clip that is
+  // on screen and never falls back to a reseed.  It is cleared by
+  // "Back to command".
+  switchMode: false,
+  // `hardCut` is the falsification control the report measures against, made
+  // visible: a switch re-seeds the agent from the new style (the shipped round-8/9
+  // path), which puts the clip back at that style's own origin.  The trail and the
+  // walked counter are *not* cleared here, unlike round 8/9 -- clearing them was
+  // what hid the jump.
+  hardCut: false,
+  switchAt: null,        // frame of the outgoing clip the next switch happens at
+  seams: [],             // seam markers of the clip on screen
+  lastSwitch: null,
+  chain: null,
 };
 
 const trailGeometry = () => new THREE.BufferGeometry();
@@ -156,6 +192,17 @@ function setStatus(text, error = false) {
   statusElement.dataset.error = error ? 'true' : 'false';
   html.dataset.mlxStatus = error ? 'error' : 'ready';
 }
+
+// The page reports its own uncaught errors into the DOM, so "a headless session
+// had 0 page errors" is a fact a `--dump-dom` can read back without a second tool
+// and without trusting the agent's summary.
+let pageErrors = 0;
+window.addEventListener('error', event => {
+  pageErrors += 1;
+  html.dataset.mlxPageErrors = String(pageErrors);
+  html.dataset.mlxLastError = String(event.message).slice(0, 300);
+  console.error(event.message);
+});
 
 function median(values) {
   if (!values.length) return 0;
@@ -238,6 +285,42 @@ const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const pointerNdc = new THREE.Vector2();
 const raycaster = new THREE.Raycaster();
 const hitPoint = new THREE.Vector3();
+
+// ---------------------------------------------------------------------------
+// switch seams -- one cyan post per handoff, drawn where the joined clip changes
+// style.  The post is placed from the *same* array the skeleton is drawn from
+// (the root entry of the seam frame), so it cannot drift from the animation.
+// ---------------------------------------------------------------------------
+const seamGroup = new THREE.Group();
+scene.add(seamGroup);
+const SEAM_COLOR = 0x7ad7ff;
+
+function rebuildSeamMarkers() {
+  while (seamGroup.children.length) {
+    const child = seamGroup.children.pop();
+    child.geometry?.dispose();
+    child.material?.dispose();
+  }
+  for (const seam of state.seams) {
+    const [x, y, z] = seam.world;
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.012, 0.012, 1.35, 8),
+      new THREE.MeshBasicMaterial({color: SEAM_COLOR, transparent: true, opacity: 0.9,
+                                   depthWrite: false}));
+    post.position.set(x, 0.675, z);
+    post.renderOrder = 6;
+    seamGroup.add(post);
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.2, 0.27, 32),
+      new THREE.MeshBasicMaterial({color: SEAM_COLOR, transparent: true, opacity: 0.9,
+                                   side: THREE.DoubleSide, depthWrite: false}));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(x, 0.02, z);
+    ring.renderOrder = 6;
+    seamGroup.add(ring);
+  }
+  html.dataset.mlxSeamMarkers = String(state.seams.length);
+}
 
 function groundPointAt(clientX, clientY) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -461,7 +544,7 @@ function nextSeed() {
 
 async function requestPlan(advance, options = {}) {
   if (state.pending) { state.queued = true; return null; }
-  const toTargets = options.toTargets === true && state.placed.length > 0;
+  const toTargets = options.toTargets === true && state.placed.length > 0;  const sequence = options.sequence || null;
   state.pending = true;
   const started = performance.now();
   try {
@@ -470,19 +553,32 @@ async function requestPlan(advance, options = {}) {
       seed: Number(seedInput.value) || 0,
       move: state.move,
       facing: state.facing,
-      reset: state.resetPending,
-      advance: state.resetPending ? 0 : advance,
+      reset: sequence ? true : state.resetPending,
+      advance: state.resetPending && !sequence ? 0 : advance,
       // Additive: without targets the server response is byte-for-byte the
       // same document it returned before this round.
       targets: toTargets ? state.placed.map(p => [p.x, p.z, p.heading_deg]) : undefined,
       target_space: 'world',
       pose_mode: 'style',
+      // The switch: keep the context, select the new style only for the model's
+      // target window.  Sent on *every* request while switchMode is on, so the
+      // automatic replans the playback loop fires stay switched as well.
+      switch: sequence ? undefined : state.switchMode,
+      sequence: sequence ? sequence.styles : undefined,
+      seams: sequence ? sequence.seams : undefined,
     });
     state.resetPending = false;
     state.lastHit = toTargets ? (payload.target_hit || null) : null;
     applyMotion(payload, advance);
+    logPlan({
+      style: styleSelect.value, sequence: sequence ? sequence.styles : null,
+      switch: state.switchMode, reset: Boolean(payload.reset), advance,
+      frames: payload.frames, seam: payload.switch ? payload.switch.mode : null,
+    });
     return payload;
   } catch (error) {
+    logPlan({style: styleSelect.value, sequence: sequence ? sequence.styles : null,
+             switch: state.switchMode, advance, error: error.message});
     setStatus(`plan failed: ${error.message}`, true);
     return null;
   } finally {
@@ -545,6 +641,7 @@ function applyMotion(payload, advance) {
   html.dataset.mlxPlanMs = payload.timing.plan_ms.toFixed(3);
   html.dataset.mlxFrames = String(payload.frames);
   html.dataset.mlxStyle = payload.style;
+  applySwitch(payload.switch || null, payload);
 
   if (state.firstPoseMs === null) {
     state.firstPoseMs = performance.now() - state.pageStart;
@@ -568,8 +665,121 @@ function applyMotion(payload, advance) {
   setStatus(`Playing · ${payload.style.replaceAll('_', ' ')} · ${payload.frames} frames planned in ${payload.timing.plan_ms.toFixed(1)} ms`);
 }
 
+function logPlan(entry) {
+  state.planLog.push(entry);
+  if (state.planLog.length > 12) state.planLog.shift();
+  html.dataset.mlxPlanLog = state.planLog.map((item, index) => {
+    const what = item.sequence ? `seq(${item.sequence.join(',')})` : item.style;
+    const flags = [item.switch ? 'switch' : null, item.reset ? 'reset' : null,
+                   `adv${item.advance}`].filter(Boolean).join('/');
+    const tail = item.error ? `error:${item.error}` : `${item.frames}f${item.seam ? '/' + item.seam : ''}`;
+    return `${index + 1}:${what}:${flags}:${tail}`;
+  }).join(' | ');
+}
+
 function schedulePlan(delay) {
   setTimeout(() => void requestPlan(Math.floor(state.playhead)), delay);
+}
+
+// ---------------------------------------------------------------------------
+// switch readout
+//
+// Every number below is the server's own seam measurement of the clip that is
+// playing (or of the joined A->B->A clip): the HUD in a screenshot therefore
+// carries the continuity evidence, not just the animation.  `seam gap` is the
+// position difference at the handoff in millimetres; `seam jump` is the worst of
+// the four ratio rows (root/most-joints velocity and acceleration) against the
+// in-segment p95 of the same finite difference -- the criterion is <= 1.
+// ---------------------------------------------------------------------------
+function worstRatio(metrics, keys) {
+  return keys.reduce((best, key) => Math.max(best, metrics.ratio[key] || 0), 0);
+}
+
+function applySwitch(block, payload) {
+  state.lastSwitch = block;
+  state.seams = [];
+  const styleLabel = payload.style.replaceAll('_', ' ');
+  if (!block) {
+    hud.seamgap.textContent = '—';
+    hud.seamjump.textContent = '—';
+    hud.seamgap.removeAttribute('data-state');
+    hud.seamjump.removeAttribute('data-state');
+    statSeam.textContent = '—';
+    html.dataset.mlxSeam = '';
+    html.dataset.mlxSeamChain = '';
+    if (state.chain) { state.chain = null; hud.style.textContent = styleLabel; }
+    rebuildSeamMarkers();
+    return;
+  }
+  const chain = (block.chain || []).filter(Boolean).map(name => name.replaceAll('_', ' '));
+  state.chain = chain.length ? chain : null;
+  hud.style.textContent = state.chain ? state.chain.join(' → ') : styleLabel;
+  // Seam markers: the root of the first frame after each handoff, read out of the
+  // motion array the skeleton is drawn from.
+  const stride = state.motion.joints * 3;
+  for (const seam of block.seams || []) {
+    const frame = Math.min(state.motion.frames - 1, Math.max(0, seam.joined_frame));
+    const index = frame * stride;
+    state.seams.push({
+      joined_frame: frame,
+      world: [state.motion.world_positions_xyz[index],
+              state.motion.world_positions_xyz[index + 1],
+              state.motion.world_positions_xyz[index + 2]],
+    });
+  }
+  rebuildSeamMarkers();
+  if (!(block.seams || []).length) {
+    hud.seamgap.textContent = block.conditioned ? 'no seam' : 'cold';
+    hud.seamjump.textContent = '—';
+    hud.seamgap.removeAttribute('data-state');
+    hud.seamjump.removeAttribute('data-state');
+    statSeam.textContent = block.note || 'no seam to measure yet';
+    html.dataset.mlxSeam = 'none';
+    html.dataset.mlxSeamChain = (block.chain || []).join('>');
+    return;
+  }
+  const keys = ['root_position', 'root_velocity', 'root_acceleration',
+                'joint_velocity', 'joint_acceleration'];
+  let gap = 0;
+  let ratio = 0;
+  for (const seam of block.seams) {
+    gap = Math.max(gap, seam.metrics.root_position_m);
+    ratio = Math.max(ratio, worstRatio(seam.metrics, keys));
+  }
+  const ok = block.all_seams_within_p95 !== false;
+  hud.seamgap.textContent = `${(gap * 1000).toFixed(2)} mm`;
+  hud.seamjump.textContent = `${ratio.toFixed(2)}×`;
+  hud.seamgap.dataset.state = gap <= 0.0015 ? 'ok' : 'miss';
+  hud.seamjump.dataset.state = ratio <= 1 ? 'ok' : 'miss';
+  html.dataset.mlxSeamGapMm = (gap * 1000).toFixed(4);
+  html.dataset.mlxSeamRatio = ratio.toFixed(4);
+  html.dataset.mlxSeamFrames = block.seams.map(seam => seam.joined_frame).join(',');
+  html.dataset.mlxSeamChain = (block.chain || []).join('>');
+  html.dataset.mlxSeamOk = String(ok);
+  html.dataset.mlxSeam = 'measured';
+  const lines = (block.seams || []).map(seam => {
+    const m = seam.metrics;
+    return `seam @frame ${seam.joined_frame}: gap ${(m.root_position_m * 1000).toFixed(3)} mm, `
+      + `joint ${(m.joint_position_m * 1000).toFixed(2)} mm, `
+      + `Δv ${m.root_velocity_mps.toFixed(3)}/${m.p95.root_velocity_mps.toFixed(3)} m/s `
+      + `(${m.ratio.root_velocity.toFixed(2)}×), `
+      + `Δω ${m.joint_velocity_deg_s.toFixed(1)}° /s (${m.ratio.joint_velocity.toFixed(2)}×, `
+      + `${m.joints_over_p95.velocity}/34 joints over p95)`;
+  });
+  switchStatus.dataset.state = ok ? 'ok' : 'miss';
+  switchStatus.textContent =
+    `${(block.chain || []).join(' → ')} · ${block.mode} · conditioned ${block.conditioned} · `
+    + `${lines.join('  |  ')} · worst ${ratio.toFixed(2)}× ${ok ? 'within p95' : 'ABOVE p95'}`;
+  statSeam.textContent = `${(gap * 1000).toFixed(2)} mm gap · ${ratio.toFixed(2)}× jump`;
+}
+
+function syncSwitchPanel() {
+  switchGo.setAttribute('aria-pressed', String(state.switchMode));
+  switchGo.textContent = state.switchMode ? 'Switching (live)' : 'Switch now';
+  if (!state.switchMode && !html.dataset.mlxSeam) {
+    switchStatus.textContent = 'no switch yet';
+  }
+  html.dataset.mlxSwitchMode = String(state.switchMode);
 }
 
 // ---------------------------------------------------------------------------
@@ -659,20 +869,127 @@ stopButton.addEventListener('click', () => {
 });
 
 styleSelect.addEventListener('change', () => {
+  switchTo(styleSelect.value);
+});
+
+// ---------------------------------------------------------------------------
+// switch controls
+//
+// "Switch now" is the whole feature: it re-plans with the style that is selected
+// *and* a flag that tells the server to keep the four frames the model is
+// standing on.  Because `state.switchMode` stays set, the automatic replans the
+// playback loop fires carry the same flag -- so the switch is not a one-shot
+// event that decays back into command-driven planning.
+// ---------------------------------------------------------------------------
+function switchTo(styleName) {
+  if (styleName) {
+    styleSelect.value = styleName;
+    switchSelect.value = styleName;
+  }
+  if (state.resetPending || !state.motion || state.hardCut) {
+    // Cold start, or the control arm: reseed from the new style and start at its
+    // own origin.  This is exactly what a style change did before this round.
+    state.resetPending = true;
+    state.switchMode = false;
+    state.motion = null;
+    void requestPlan(0);
+  } else {
+    state.switchMode = true;
+    state.switchAt = Math.floor(state.playhead);
+    // The trail and the walked counter are deliberately *not* reset any more:
+    // there is no teleport to hide, and a trail that runs straight through the
+    // switch is the visible half of the same claim the seam numbers make.
+    void requestPlan(state.switchAt);
+  }
+  syncSwitchPanel();
+}
+
+function bootSwitch() {
+  // `?switch=<style>&after=<ms>` drives the *live* switch path from the address
+  // bar with two ordinary plan requests (no synthetic input): plan A, let it play
+  // for `after` milliseconds of wall clock, then switch to that style at whatever
+  // frame is on screen -- which is what pressing "Switch now" while walking does.
+  const target = addressBar.get('switch');
+  if (!target) return null;
+  // The switch *is* a change of the planning style: both selectors move, exactly
+  // as they do when "Switch now" is pressed.
+  switchSelect.value = target;
+  styleSelect.value = target;
+  if (state.hardCut) {
+    // The control arm from the address bar: reseed on the style change, exactly
+    // what a plain style switch did before this round.
+    state.switchMode = false;
+    state.resetPending = true;
+    state.motion = null;
+    return requestPlan(0);
+  }
+  const after = Number(addressBar.get('after') || 0);
+  if (after <= 0) {
+    state.switchMode = true;
+    state.switchAt = Number(addressBar.get('at') || 20) || 20;
+    return requestPlan(state.switchAt);
+  }
+  return new Promise(resolve => setTimeout(async () => {
+    state.switchMode = true;
+    state.switchAt = Math.max(0, Math.floor(state.playhead));
+    await requestPlan(state.switchAt);
+    resolve(null);
+  }, after));
+}
+
+function otherStyle(styleName) {
+  const options = [...switchSelect.options].map(option => option.value);
+  return options.find(name => name !== styleName) || styleName;
+}
+
+switchGo.addEventListener('click', () => {
+  switchTo(switchSelect.value);
+  switchGo.blur();
+});
+
+switchPlay.addEventListener('click', () => {
+  const a = styleSelect.value;
+  const b = switchSelect.value && switchSelect.value !== a ? switchSelect.value : otherStyle(a);
+  const seam = Math.max(6, Math.floor(state.playhead) || Number(addressBar.get('seam') || 20));
+  // A->B->A as *one* clip: the legs are chained on the server's agent, so the
+  // page plays a single motion whose seams are the ones the HUD reports.
+  state.switchMode = false;
   state.resetPending = true;
   state.trailPoints = [];
   state.lastRoot = null;
-  state.walkedMetres = 0;
-  state.motion = null;
-  requestPlan(0);
+  void requestPlan(0, {sequence: {styles: [b, a], seams: [seam, seam]}});
+  syncSwitchPanel();
+  switchPlay.blur();
+});
+
+switchNaive.addEventListener('change', () => {
+  state.hardCut = switchNaive.checked;
+  html.dataset.mlxHardCut = String(state.hardCut);
+  switchStatus.textContent = state.hardCut
+    ? 'control arm: a switch re-seeds the agent from the new style (the clip jumps back to that style\'s origin)'
+    : 'no switch yet';
+  switchStatus.removeAttribute('data-state');
+});
+
+switchClear.addEventListener('click', () => {
+  state.switchMode = false;
+  state.resetPending = true;
+  void requestPlan(0);
+  syncSwitchPanel();
+  switchClear.blur();
 });
 
 seedNext.addEventListener('click', () => { nextSeed(); schedulePlan(0); seedNext.blur(); });
 seedInput.addEventListener('change', () => schedulePlan(0));
 
 // --- placed targets --------------------------------------------------------
+function targetsActive() {
+  return Boolean(targetKeep.checked && state.placed.length && state.targetsSticky);
+}
+
 function replanToTargets() {
   if (!state.placed.length) return;
+  state.targetsSticky = targetKeep.checked;
   // Plan from the frame already on screen (`advance`) so the motion starts where
   // the character actually is -- the same continuity seam the rest of the page
   // uses. A fresh session has nothing to advance from, hence the reset flag.
@@ -685,6 +1002,7 @@ targetPlace.addEventListener('click', () => setPlacing(!state.placing));
 targetReplan.addEventListener('click', replanToTargets);
 targetClear.addEventListener('click', () => {
   state.placed = [];
+  state.targetsSticky = false;
   state.lastHit = null;
   renderTargetList();
   rebuildTargetMarkers();
@@ -702,6 +1020,13 @@ targetHere.addEventListener('click', () => {
   const z = root.z + (facing[1] / length);
   addTarget(x, z, (Math.atan2(facing[0] / length, facing[1] / length) * 180) / Math.PI);
   targetHere.blur();
+});
+
+targetKeep.addEventListener('change', () => {
+  html.dataset.mlxTargetKeep = String(targetKeep.checked);
+  // Unchecking stops the chase without dropping the points: the next replan goes
+  // back to command-driven motion and the targets stay on screen to re-enable.
+  if (!targetKeep.checked) state.targetsSticky = false;
 });
 
 targetsToggle.addEventListener('change', () => {
@@ -729,7 +1054,7 @@ function animate(now) {
     state.playhead += delta * state.fps;
     const last = state.motion.frames - 1;
     if (liveToggle.checked && !state.pending && state.playhead >= last - CONTROL_LOOKAHEAD) {
-      requestPlan(Math.max(0, Math.floor(state.playhead)));
+      requestPlan(Math.max(0, Math.floor(state.playhead)), {toTargets: targetsActive()});
     }
     if (state.playhead > last) {
       state.playhead = liveToggle.checked ? last : state.playhead - last;
@@ -780,14 +1105,19 @@ async function boot() {
     html.dataset.mlxColdStartMs = health.cold_start_ms.toFixed(1);
     const inventory = await api('/api/styles');
     styleSelect.innerHTML = '';
+    switchSelect.innerHTML = '';
     for (const name of inventory.styles) {
       const option = document.createElement('option');
       option.value = name;
       option.textContent = name.replaceAll('_', ' ');
       styleSelect.append(option);
+      switchSelect.append(option.cloneNode(true));
     }
     styleSelect.value = inventory.styles.includes(addressBar.get('style'))
       ? addressBar.get('style') : inventory.default;
+    switchSelect.value = inventory.styles.includes(addressBar.get('switch_to'))
+      ? addressBar.get('switch_to') : inventory.styles.find(name => name !== styleSelect.value)
+        || inventory.default;
     if (addressBar.get('seed')) seedInput.value = String(Number(addressBar.get('seed')) || 0);
     if (addressBar.get('move')) {
       const [x, z] = addressBar.get('move').split(',').map(Number);
@@ -825,15 +1155,76 @@ async function boot() {
     state.readyMs = performance.now() - state.pageStart;
     html.dataset.mlxReady = 'true';
     html.dataset.mlxReadyMs = state.readyMs.toFixed(1);
-    if (state.placed.length && addressBar.get('to_targets') === '1') {
+    // `?ab=<style>&seam=<frame>` plans A -> B -> A as one joined clip on boot and
+    // parks the playhead at `?t=` so a single headless `goto` renders an exact
+    // frame of a recorded switch.  Address-bar parameters only; no synthetic
+    // input, no clicking.
+    if (addressBar.get('naive') === '1') {
+      switchNaive.checked = true;
+      state.hardCut = true;
+      html.dataset.mlxHardCut = 'true';
+    }
+    const ab = addressBar.get('ab');
+    if (ab) {
+      const seam = Math.max(6, Number(addressBar.get('seam') || 20) || 20);
+      state.resetPending = true;
+      await requestPlan(0, {sequence: {styles: [ab, styleSelect.value], seams: [seam, seam]}});
+    } else if (state.placed.length && addressBar.get('to_targets') === '1') {
       await requestPlan(0, {toTargets: true});
     } else {
       await requestPlan(0);
+      await bootSwitch();
     }
+    applySeek();
   } catch (error) {
     setStatus(`startup failed: ${error.message}`, true);
     console.error(error);
   }
+}
+
+function applySeek() {
+  // `?t=<frame>&paused=1` freezes the clip on an exact frame so a screenshot is a
+  // chosen frame rather than whatever the wall clock produced.
+  if (addressBar.get('paused') === '1') {
+    state.playing = false;
+    playButton.textContent = 'Play';
+    playButton.setAttribute('aria-pressed', 'false');
+    html.dataset.mlxPlaying = 'false';
+  }
+  const frame = Number(addressBar.get('t'));
+  if (addressBar.get('t') === null || !Number.isFinite(frame) || !state.motion) return;
+  const target = Math.max(0, Math.min(state.motion.frames - 1, frame));
+  // Replay the clip up to `target` through the *same* functions the playback loop
+  // calls, so the ground trail and the walked counter are the ones real playback
+  // would have produced -- not a second, hand-drawn path.  A frozen frame is a
+  // chosen frame of a real session, not a substitute for one.
+  state.trailPoints = [];
+  state.lastRoot = null;
+  state.walkedMetres = 0;
+  state.trailLine.geometry.dispose();
+  state.trailLine.geometry = trailGeometry();
+  for (let index = 0; index <= target; index++) {
+    state.playhead = index;
+    renderPose();
+    if (state.rig) updateTravel();
+    pushTrail();
+  }
+  state.playhead = target;
+  html.dataset.mlxSeekFrame = String(state.playhead);
+  // Settle the pose and the camera *here* rather than leaning on the next
+  // animation frame: under a virtual-time budget the requestAnimationFrame stream
+  // can be starved the moment the budget is spent, and then the frozen frame would
+  // be whatever the last callback happened to draw.  Both lerps are geometric, so
+  // 200 iterations is convergence, not a magic number.
+  for (let index = 0; index < 200; index++) {
+    renderPose();
+    updateCamera();
+  }
+  updateTravel();
+  statPlayback.textContent =
+    `${state.playing ? 'playing' : 'paused'} · frame ${state.playhead.toFixed(0)}`
+    + `/${state.motion.frames - 1}`;
+  html.dataset.mlxTargetKeep = String(targetKeep.checked);
 }
 
 window.addEventListener('resize', resize);

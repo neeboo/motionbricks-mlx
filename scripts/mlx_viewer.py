@@ -45,6 +45,11 @@ Protocol
     targets  user-placed target keyframes, "x,z,deg;x,z,deg" (up to 4)
     target_space  "world" (default) or "offset" from the clip start
     pose_mode     "style" (default) or "hold" the clip's starting pose
+    switch   1 to switch *into* ``style`` from the current clip, keeping the
+             context (default 0).  Without it a style change reseeds the agent
+             from the new style, which is the control this round measures against.
+    sequence  "B,A" -- plan a joined A->B->A clip in one response (style is A)
+    seams     the seam frame for each entry of ``sequence`` (default: advance)
 
 ``targets`` is the *external* half of the transition boundary: the model's target
 window is boundary frames 4..7 (``src/root.cpp:366``), normally manufactured from
@@ -62,6 +67,17 @@ planning context is the *last four frames of its current motion*, and
 frame 0 is therefore the world pose the page has already displayed at frame
 ``advance``, which is exactly how the reference client re-anchors its playhead
 (``replacementPlayhead = playhead - advance``, ``demo/web/app.js``).
+
+``switch`` is the same mechanism with the *style* changed as well: nothing is
+reset, so the target window (frames 4..7) comes from the new style while the start
+window (frames 0..3, and therefore its ``local_root`` velocities) and the
+inherited ``apply_context_blend`` still come from the clip on screen.  The response
+gains a ``switch`` block with the measured seam (position gap, and |dv| / |da| at
+the seam against the in-segment p95 of the same finite difference).  Sent with
+``switch=1`` on every request that follows a style change, so a live replan keeps
+starting from the new style instead of falling back to a reseed.  ``sequence``
+returns a whole A->B->A clip in one response with every seam measured; it is what
+the page's "Play A -> B -> A" control and the recorded GIF play.
 
 Everything here is read-only with respect to the repository: no checkpoint, no
 ``out/`` document and no reference file is written.  The server binds
@@ -92,6 +108,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from motionbricks_mlx.data.agent import Agent, Command          # noqa: E402
 from motionbricks_mlx.data.style import load_style              # noqa: E402
+from motionbricks_mlx.data.switch import (LEG_KINDS, Switcher,  # noqa: E402
+                                          seam_metrics)
 from motionbricks_mlx.data.targets import (measure_hit, plan_with_targets,  # noqa: E402
                                            resolve_world_targets)
 from motionbricks_mlx.export.plan_json import FPS               # noqa: E402
@@ -219,6 +237,7 @@ class Planner:
         self._style_cache: dict[str, object] = {}
         self._agent: Agent | None = None
         self._agent_style: str | None = None
+        self._switcher: Switcher | None = None
         self.lock = threading.Lock()
         self.stats = PlannerStats()
         self.client: dict | None = None
@@ -238,18 +257,39 @@ class Planner:
             self._style_cache[name] = load_style(self.styles_path / f"{name}.mbstyle")
         return self._style_cache[name]
 
+    def switch_command(self, style: str, seed: int, move, facing, argmax: bool) -> Command:
+        return Command(style=self.style(style), movement=(float(move[0]), 0.0, float(move[1])),
+                       facing=(float(facing[0]), 0.0, float(facing[1])),
+                       seed=int(seed), sampling_argmax=bool(argmax))
+
     def plan(self, style: str, seed: int, move, facing, reset: bool, advance: int,
              argmax: bool = False, targets=None, target_space: str = "world",
-             pose_mode: str = "style") -> dict:
+             pose_mode: str = "style", switch: bool = False,
+             sequence=None, seams=None) -> dict:
+        """One plan; ``switch``/``sequence`` are the additive A->B seam paths.
+
+        With neither flag this method is the round-8/9 code path unchanged: the
+        same branch, the same call, the same response keys.
+        """
         loaded = self.style(style)
+        if sequence:
+            return self.plan_sequence(style, sequence, seed, move, facing, argmax, advance,
+                                      seams)
         with self.lock:
-            if reset or self._agent is None or self._agent_style != style:
+            previous = self._agent.current_motion if self._agent is not None else None
+            previous_style = self._agent_style
+            reseeded = reset or self._agent is None or (self._agent_style != style and not switch)
+            if reseeded:
                 self._agent = Agent(self.pipeline, self.bundle.neutral_joints, self.parents)
                 self._agent.reset(loaded)
-                self._agent_style = style
                 advance = 0
             elif advance > 0 and self._agent.current_motion is not None:
                 self._agent.advance(int(advance))
+            # The agent's *active* style is the one its current motion is in.  A
+            # switch updates it without a reseed, which is what makes the next
+            # request in the same style continue from B instead of teleporting
+            # back to B's own origin.
+            self._agent_style = style
             command = Command(style=loaded, movement=(float(move[0]), 0.0, float(move[1])),
                               facing=(float(facing[0]), 0.0, float(facing[1])),
                               seed=int(seed), sampling_argmax=bool(argmax))
@@ -279,19 +319,134 @@ class Planner:
                 placed_payload = None
             plan_ms = (time.perf_counter() - started) * 1000.0
             self.stats.record(plan_ms)
+            switch_payload = None
+            if switch:
+                # The seam is between the clip that was on screen and this one.
+                # ``advance`` is the frame of the old clip the context was taken
+                # from, which is where ``restore_world`` puts the new clip's
+                # frame 0 -- so the two clips meet exactly there.
+                switch_payload = self._live_switch_payload(
+                    previous, previous_style, style, advance if not reseeded else 0,
+                    motion, conditioned=bool(previous is not None and not reseeded))
             roots = np.asarray(motion.roots, dtype=np.float64)
             rotations = np.asarray(motion.rotations_xyzw, dtype=np.float64)
             target_roots = np.asarray(motion.target_roots, dtype=np.float64)
             target_rotations = np.asarray(motion.target_local_rotations_xyzw, dtype=np.float64)
 
+        payload = self._motion_payload(style, seed, move, facing, advance, reset, roots,
+                                       rotations, target_roots, target_rotations, plan_ms,
+                                       "argmax" if argmax else "gumbel")
+        if placed_payload is not None:
+            # Additive: only a plan that placed targets carries these keys, so
+            # every existing consumer sees the same response as before.
+            payload["placed_targets"] = placed_payload
+            payload["target_hit"] = hit
+        if switch_payload is not None:
+            payload["switch"] = switch_payload
+        return payload
+
+    # -- switch helpers --------------------------------------------------
+    def _live_switch_payload(self, previous, previous_style, style: str, seam_at: int,
+                             motion, conditioned: bool) -> dict:
+        """The seam report for a live A->B switch (or for a same-style replan)."""
+        report = None
+        if previous is not None and conditioned:
+            index = min(int(seam_at), int(previous.frames) - 1)
+            if index >= 3 and motion.frames >= 4:
+                report = seam_metrics(previous, index, motion, self.parents, self.rest,
+                                      label=f"{previous_style}->{style}",
+                                      world=world_positions)
+        seams = []
+        if report is not None:
+            # Same nested shape the sequence path returns, so one page readout
+            # handles both and the seam cannot be described two ways.
+            seams.append({"joined_frame": 0, "from_style": previous_style,
+                          "to_style": style, "metrics": report})
+        ratios = [max(report["ratio"].values())] if report else []
+        return {
+            "mode": "live",
+            "conditioned": bool(conditioned),
+            "from_style": previous_style,
+            "to_style": style,
+            "chain": [previous_style, style] if previous_style else [style],
+            "seam_at": int(seam_at) if conditioned else 0,
+            "legs": [],
+            "seams": seams,
+            "joined_frames": int(motion.frames),
+            "criterion": None if report is None else report["criterion"],
+            "position_criterion": None if report is None else report["position_criterion"],
+            "worst_seam_ratio": max(ratios) if ratios else None,
+            "all_seams_within_p95": bool(report["all_within_p95"]) if report else None,
+            "note": None if conditioned else
+                    "no previous clip to condition on (cold start or reseed)",
+        }
+
+    def plan_sequence(self, style: str, sequence, seed: int, move, facing, argmax: bool,
+                      advance: int, seams=None) -> dict:
+        """A -> B -> ... -> A as **one** joined clip, every seam measured.
+
+        The legs are chained on the live agent (``Agent.advance`` then
+        ``Agent.plan`` -- no reseed between legs), so the clip the page plays is
+        the same object the seam numbers describe.
+        """
+        names = [style] + [str(name) for name in sequence]
+        if len(names) < 2:
+            raise ValueError("a sequence needs at least one style after 'style'")
+        loaded = [self.style(name) for name in names]
+        if seams:
+            seam_frames = [int(value) for value in seams]
+            if len(seam_frames) != len(names) - 1:
+                raise ValueError(f"{len(names)} styles need {len(seam_frames) - 1} seams")
+        else:
+            seam_frames = [int(advance) or 20] * (len(names) - 1)
+        with self.lock:
+            if self._switcher is None:
+                self._switcher = Switcher(self.pipeline, self.bundle,
+                                          {name: loaded[index] for index, name in enumerate(names)},
+                                          seed=int(seed), move=move, facing=facing,
+                                          world=world_positions)
+            else:
+                self._switcher.styles.update({name: loaded[index]
+                                              for index, name in enumerate(names)})
+                self._switcher.seed = int(seed)
+                self._switcher.move = tuple(move)
+                self._switcher.facing = tuple(facing)
+            agent = Agent(self.pipeline, self.bundle.neutral_joints, self.parents)
+            agent.reset(loaded[0])
+            started = time.perf_counter()
+            plan = self._switcher.sequence_with(agent, names, seam_frames,
+                                                kind=LEG_KINDS[0], seed=int(seed))
+            plan_ms = (time.perf_counter() - started) * 1000.0
+            self.stats.record(plan_ms)
+            self._agent = agent
+            self._agent_style = names[-1]
+            roots = np.asarray(plan.roots, dtype=np.float64)
+            rotations = np.asarray(plan.rotations_xyzw, dtype=np.float64)
+            target_roots = np.asarray(plan.target_roots, dtype=np.float64)
+            target_rotations = np.asarray(plan.target_local_rotations_xyzw, dtype=np.float64)
+            block = plan.document()
+        payload = self._motion_payload(style, seed, move, facing, seam_frames[0], reset=True,
+                                       roots=roots, rotations=rotations,
+                                       target_roots=target_roots,
+                                       target_rotations=target_rotations, plan_ms=plan_ms,
+                                       sampling="argmax" if argmax else "gumbel")
+        block.update({"mode": "sequence", "conditioned": True, "from_style": names[0],
+                      "to_style": names[-1], "chain": names, "seam_at": seam_frames[0],
+                      "note": None})
+        payload["switch"] = block
+        return payload
+
+    def _motion_payload(self, style: str, seed: int, move, facing, advance: int, reset: bool,
+                        roots, rotations, target_roots, target_rotations, plan_ms: float,
+                        sampling: str) -> dict:
+        """The response document shared by every planning path (shape unchanged)."""
         fk_started = time.perf_counter()
         positions = world_positions(roots, rotations, self.parents, self.rest)
         target_positions = world_positions(target_roots, target_rotations, self.parents, self.rest)
         fk_ms = (time.perf_counter() - fk_started) * 1000.0
-
         frames = int(roots.shape[0])
         travel = float(np.linalg.norm(np.diff(roots, axis=0), axis=1).sum()) if frames > 1 else 0.0
-        payload = {
+        return {
             "ok": True,
             "style": style,
             "seed": int(seed),
@@ -316,14 +471,8 @@ class Planner:
             },
             "timing": {"plan_ms": round(plan_ms, 4), "fk_ms": round(fk_ms, 4),
                        "server_total_ms": round(plan_ms + fk_ms, 4)},
-            "sampling": "argmax" if argmax else "gumbel",
+            "sampling": sampling,
         }
-        if placed_payload is not None:
-            # Additive: only a plan that placed targets carries these keys, so
-            # every existing consumer sees the same response as before.
-            payload["placed_targets"] = placed_payload
-            payload["target_hit"] = hit
-        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +490,27 @@ def parse_pair(raw, default):
     if len(parts) != 2:
         raise ValueError(f"expected 'x,z', got {raw!r}")
     return [float(parts[0]), float(parts[1])]
+
+
+def parse_sequence(raw):
+    """``"walk_zombie,walk"`` (query string) or ``["walk_zombie", "walk"]`` -> list.
+
+    Used for both ``sequence`` (style names) and ``seams`` (frame indices); an
+    absent/empty value is ``None`` so the caller can tell "not asked" from "asked
+    for nothing".
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        items = [piece.strip() for piece in str(raw).split(",")]
+    items = [item for item in items if item != ""]
+    if not items:
+        return None
+    if all(isinstance(item, (int, float)) or str(item).lstrip("-").isdigit() for item in items):
+        return [int(item) for item in items]
+    return [str(item) for item in items]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -496,6 +666,21 @@ class Handler(BaseHTTPRequestHandler):
         targets = request.get("targets")
         target_space = str(request.get("target_space") or "world").lower()
         pose_mode = str(request.get("pose_mode") or "style").lower()
+        switch = str(request.get("switch", "0")).lower() in ("1", "true", "yes", "on")
+        sequence = parse_sequence(request.get("sequence"))
+        seams = parse_sequence(request.get("seams"))
+        if sequence is not None:
+            return planner.plan(style=style, seed=seed, move=move, facing=facing,
+                                reset=True, advance=advance, argmax=argmax,
+                                sequence=sequence, seams=seams)
+        if switch:
+            # The A->B path: keep the context, select B for frames 4..7.  Sent by
+            # the page for every plan that follows a style switch, so a live
+            # replan keeps starting from B instead of falling back to a reseed.
+            return planner.plan(style=style, seed=seed, move=move, facing=facing,
+                                reset=reset, advance=advance, argmax=argmax,
+                                switch=True, targets=targets,
+                                target_space=target_space, pose_mode=pose_mode)
         if not targets:
             # Untouched call shape for every request that does not place a
             # target: the response is the same document it was before, and an
