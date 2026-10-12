@@ -1506,8 +1506,9 @@ path build the boundary conditions with one piece of code; `plan` calls it too.
 ### 29.1 Stage throughput (the *stage* number, never the bake number)
 
 Homogeneous batch (one style, different seeds — one token-count group, so a
-single batched forward covers the whole batch), load `10.4 -> 11.2`, 5 repeats,
-same process:
+single batched forward covers the whole batch), 5 repeats, same process, each
+row carrying its own run's load: `B = 1,2` at load `11.06 -> 10.50`, `B = 4,8,16`
+at load `10.36 -> 11.24`.
 
 | B | root serial | root batched | root speedup | pose serial | pose batched | pose speedup | decoder serial | decoder batched | decoder speedup |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1721,6 +1722,11 @@ ccda1952...  /tmp/r4/final-gpu.json   ==  out/plan-mlx-gpu.json
 `pose.sampling_uniforms` and `decoder.quantized` at `0.000e+00`; the 5 seeds x 6
 steps token-identity gate passes; `pytest` is **199 passed / 1 skipped** against
 the **192 passed / 1 skipped** this round started from.
+
+As an independent, read-only quality check the C-line's regression gate was also
+invoked against this build (`scripts/eval_gate.py --no-collect`, unchanged and
+uncommitted by this round): **`GATE PASS`** — six metrics green on the fixed
+scenario set and all five negative controls tripping their designated metric.
 
 ### 33.2 Load
 
