@@ -1794,3 +1794,132 @@ diff -q /tmp/r4/final-gpu.json out/plan-mlx-gpu.json
 ./.venv/bin/python scripts/mlx_align.py trace out/ref/trace/transition-0.json --device gpu
 ./.venv/bin/python -m pytest -q
 ```
+
+---
+
+# Round 5
+
+## 35. Frozen round-5 criteria
+
+Written and committed **before** any measurement or code change of this round, and
+not edited afterwards; the round-5 results are appended below it.  The round-3 and
+round-4 rules (21.3, 28.2-28.6) are carried forward, and the items that are re-used
+are restated here so this section stands on its own.
+
+### 35.1 Subject — the single-pass orchestrator
+
+Round 4 measured where a bake's time goes (33.3, homogeneous, `B = 16`): the three
+batched forwards cost **2.58 ms/scenario**, the host pass **3.62 ms**, and the stage
+driver's re-execution of the partial passes another **3.73 ms** -- so the batched
+bake (9.92 ms/scenario) is charged for the host glue roughly twice.  It re-executes
+because `run_transition` is an ordinary function: the round-4 driver calls it once
+per stage boundary per scenario (`BakeSuspend` unwinds it), and every one of those
+calls redoes the host glue up to that boundary before it is discarded.
+
+This round makes the transition **resumable** without changing what it computes:
+
+* the accepted `MlxPipeline.run_transition` body becomes a **step generator** whose
+  locals survive across the four forward points (`probe`, `plan`, `pose`,
+  `decoder`).  `run_transition` becomes the trivial driver that hands each request
+  to the accepted forward and returns the drained result, so the accepted
+  single-scenario path is the same arithmetic in the same order and is pinned by the
+  two document hashes (35.3);
+* `models/bake.py` gains a **single-pass orchestrator** that creates one step
+  generator per scenario and drives them in lockstep: each host step runs exactly
+  **once** per scenario, each neural forward runs exactly once per shape group, and
+  the rows are fed back through the same yield points.  The round-4 `StageDriver` /
+  `drive_batch` (suspend-and-restart) is left **exactly as it is**: it is this
+  round's "previous round's batch" arm, and round 4's numbers must stay reproducible.
+
+The orchestrator answers:
+
+* **end-to-end bake throughput** and single-scenario p50 for `B` = 1 / 2 / 4 / 8 / 16
+  for **three** arms -- serial, round-4 batch (`drive_batch`), round-5 single pass --
+  in both grouping modes (duration-mixed and duration-homogeneous);
+* the single pass's **decomposition** into batched forward / host glue / orchestrator
+  overhead, against round 4's decomposition, and the floor that remains;
+* the **re-run token campaign** and the margins recomputed from it (35.2 item 4),
+  because the orchestrator changes the order in which the batch's forwards are
+  issued and round 4's tier may not be inherited.
+
+The stage-level number is reported as a stage number and never quoted as end to end;
+the end-to-end number is one timed region that produces `B` final motions.
+
+### 35.2 Correctness gate (21.3 / 28.2 carried forward, plus the new instrument check)
+
+1. `scripts/mlx_align.py plan` and `scripts/mlx_align.py trace` do not regress:
+   `ALIGNMENT OK` / `TRACE OK` with `pose.tokens`, `pose.sampling_uniforms` and
+   `decoder.quantized` at `0.000e+00`.
+2. For `N >= 5` seeds x 6 steps, `pose.tokens` and `pose.sampling_uniforms` are
+   element-for-element identical to the accepted default.
+3. The **final action deviation is reported even when it is zero**: max `|d|` on
+   `roots` (m), max `|d|` on `rotations_xyzw`, and the worst angle, for the default
+   path and for every `B` of the campaign, for both grouping modes.
+4. The **token campaign** compares each `B`'s every scenario against *the same
+   scenario run alone* (`B = 1` semantics) on `pose.tokens`, `pose.sampling_uniforms`,
+   the selected duration and the final action, and reports the per-scenario
+   bit-identity rate and the worst deviation.
+5. **New this round -- the two batch arms must agree bit for bit.**  For every `B`
+   and both grouping modes, the single-pass arm and the round-4 `drive_batch` arm run
+   the same batched forwards on the same rows; their `pose.tokens`,
+   `pose.sampling_uniforms`, selected duration, `roots` and `rotations_xyzw` must be
+   **exactly equal** (`np.array_equal`, not a tolerance).  A difference means the
+   orchestrator changed an execution order that mattered, and the throughput
+   comparison against round 4 would be invalid.  The round-4 arm is the control: if
+   the two disagree, the round-4 numbers must be re-measured rather than compared.
+6. The **safety margin** is defined exactly as in round 3 / round 4 so the rounds are
+   comparable: `safety = max perturbation / min decision margin`, where
+   * *perturbation* is `max |batched - serial|` over the quantity that feeds a
+     discrete decision -- the duration logits and the pose logits -- and
+   * *margin* is the smallest `top1 - top2` gap of the noised scores of a discrete
+     decision: the 11 allowed durations (argmax) and the pose-token Gumbel decisions.
+   Round 3's pose-only `0.1124x` and round 4's full-stage `0.5290x` (homogeneous) /
+   `1.0426x` (mixed) at `B = 16` are the references the new numbers are compared with.
+7. The **round-5 campaign is the one the tier is computed from**.  Round 4's margins
+   were measured with the driver of round 4; changing the execution order means they
+   may not be inherited, so the tier is recomputed from this round's campaign
+   (decision 0007: `min` of the largest campaign-passing `B` and the largest `B` with
+   a margin `>= 1.5x`), and the round-4 values are reported beside it as a control.
+
+### 35.3 Adoption rule (12.2 / 21.3 / 28.3 carried forward)
+
+* The single-pass orchestrator is **new code on the bake path only**, and the
+  accepted single-scenario path stays byte-identical: the GPU default document must
+  still be `ccda1952c967c8d7e893a795908f7de278f2acda1ce5ba1e1889692a8904a7c5` and the
+  CPU default `262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a`
+  (`out/plan-mlx-gpu.json` / `out/plan-mlx.json`), each run with an explicit `--out`.
+  If a hash moves, the round fails regardless of the throughput.
+* The **reproducible bake tier** is `min`(largest `B` at which every scenario of this
+  round's campaign is bit-identical to the same scenario run alone on `pose.tokens`,
+  `pose.sampling_uniforms` and duration, largest `B` whose safety margin is `>= 1.5x`)
+  -- decision 0007.  Anything above it, and any `B` whose campaign was not re-run for
+  the release, is a **fast-draft tier**.  `B = 1` is never used for a bake.
+* The **manifest must record the 11 fields of decision 0007**: `bake_stages`,
+  `bake_stage_switches`, `bake_grouping`, `bake_campaign_scenarios`,
+  `bake_token_decisions_differing`, `bake_worst_roots_m`, `bake_worst_rotations`,
+  `bake_safety_ratio`, `bake_min_decision_margin`, `bake_tier`, `batch_size`, and
+  the honest **`bake_action_bit_identical=false`**.
+* If the host glue is still the bottleneck after this round, the remaining headroom
+  is **quantified and handed on**: no host maths is rewritten as part of this round.
+
+### 35.4 Measurement discipline (0.3 / 12.3 / 21.3 / 28.4 carried forward)
+
+* Every measurement records the `uptime` **load average** before and after the run;
+  the machine is not idle and the report says so.
+* Every A/B/C triple is **interleaved inside one process** on the identical scenario
+  set, with the arm order **rotated**, and every arm warms up once outside the timed
+  region.
+* Bake items are repeated **`>= 5` times** and reported as a median with the min
+  beside it; per-step items use `>= 25` steps per arm.
+* Same bundle, same seeds, same backend, same stage set within a comparison.
+
+### 35.5 Reporting format fixed in advance
+
+The round-5 results report, in this order: the frozen criteria commit; what was
+extracted and why the accepted path is unchanged; the **three-arm end-to-end bake
+table** (mixed and duration-homogeneous, `B` = 1/2/4/8/16); the **single-pass
+decomposition** (batched forward / host glue / orchestrator overhead) and the
+remaining floor; the **token campaign table** (per-`B` identity rate, differing
+decisions, worst action deviation, perturbation/margin) and the **recomputed tier**;
+the two default-path hashes; the `mlx_align` / `pytest` results; the load averages;
+the quantified next lever; and the git state.
