@@ -1,0 +1,9 @@
+resolved bake switches: {'bake_root_batch': True, 'bake_decoder_batch': True, 'bake_decode_batch': True}
+load[before] [19.59, 14.44, 11.76]
+scenarios 16  stages ['decode', 'decoder', 'pose', 'root']
+  rows[0:8] styles=['idle'] seeds=[1, 2, 3, 4, 5, 6, 7, 8]
+  rows[8:16] styles=['idle'] seeds=[9, 10, 11, 12, 13, 14, 15, 16]
+load[after] [18.98, 14.4, 11.76]
+manifest artifacts/bake-2026-10-12/idle-style/manifest.json  group B16: 12/12 fields present
+  tier=reproducible  ratio=0.21370007934408886  tokens differing=0/768  worst roots=2.662e-07 m rotations=3.874e-06  bit_identical=False
+  timing serial p50 454.54 ms  single pass p50 94.73 ms  speedup 4.798x  168.9 scenarios/s

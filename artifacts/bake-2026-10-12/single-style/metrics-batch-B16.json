@@ -1,0 +1,1559 @@
+{
+ "thresholds_from": "motionbricks_mlx.eval.thresholds.THRESHOLDS",
+ "steps": {
+  "batch-B16-w00-walk.json": {
+   "label": "w00",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.18094041561058907,
+    "foot_slide_right_m": 0.19005985844655818,
+    "foot_slide_max_m": 0.19005985844655818,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.13301438736408253,
+    "jerk_p95_deg": 0.8628967691562821,
+    "jerk_max_deg": 3.441654801810721,
+    "freeze_frac": 0.014363885088919288,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007930944980609766,
+    "foot_height_p5_m": -0.006057961464363421,
+    "foot_height_p50_m": -0.0034616069325898256,
+    "foot_height_p95_m": -0.0017743406928206217,
+    "foot_height_max_m": -0.0017070928428425218,
+    "boundary_root_mean_m": 0.020070549624205486,
+    "boundary_root_max_m": 0.020295663067031403,
+    "boundary_rotation_mean_deg": 1.272234126661511,
+    "boundary_rotation_max_deg": 5.397214085986645,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.19005985844655818,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.13301438736408253,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.8628967691562821,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 3.441654801810721,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.014363885088919288,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007930944980609766,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.020295663067031403,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.397214085986645,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w01-walk.json": {
+   "label": "w01",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.19957173452751312,
+    "foot_slide_right_m": 0.20398744979392758,
+    "foot_slide_max_m": 0.20398744979392758,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.1537428296791554,
+    "jerk_p95_deg": 0.9647368610296161,
+    "jerk_max_deg": 3.549415516296931,
+    "freeze_frac": 0.01709986320109439,
+    "ground_penetration_frac": 0.9545454545454546,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007951557720922025,
+    "foot_height_p5_m": -0.006166770653050845,
+    "foot_height_p50_m": -0.0035245169584930576,
+    "foot_height_p95_m": -0.00022551255419666662,
+    "foot_height_max_m": 0.0005337876873549238,
+    "boundary_root_mean_m": 0.011143796526276083,
+    "boundary_root_max_m": 0.011398498444301523,
+    "boundary_rotation_mean_deg": 1.2975159720491363,
+    "boundary_rotation_max_deg": 5.766452688986441,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.20398744979392758,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.1537428296791554,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.9647368610296161,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 3.549415516296931,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.01709986320109439,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007951557720922025,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.011398498444301523,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.766452688986441,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w02-walk.json": {
+   "label": "w02",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.1719613222978387,
+    "foot_slide_right_m": 0.18115020772273355,
+    "foot_slide_max_m": 0.18115020772273355,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.12447538817305535,
+    "jerk_p95_deg": 0.8121013663113806,
+    "jerk_max_deg": 3.579023681078459,
+    "freeze_frac": 0.013679890560875513,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007846843479778504,
+    "foot_height_p5_m": -0.005732584567683105,
+    "foot_height_p50_m": -0.00296405405425176,
+    "foot_height_p95_m": -0.001655398745829852,
+    "foot_height_max_m": -0.0015943376215565123,
+    "boundary_root_mean_m": 0.02158117028138797,
+    "boundary_root_max_m": 0.021675900450366197,
+    "boundary_rotation_mean_deg": 1.3474044428944345,
+    "boundary_rotation_max_deg": 5.3179571369247896,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.18115020772273355,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.12447538817305535,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.8121013663113806,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 3.579023681078459,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.013679890560875513,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007846843479778504,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.021675900450366197,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.3179571369247896,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w03-walk.json": {
+   "label": "w03",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.19185948251012078,
+    "foot_slide_right_m": 0.20150555742560153,
+    "foot_slide_max_m": 0.20150555742560153,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.14830780956453743,
+    "jerk_p95_deg": 0.9040694138391857,
+    "jerk_max_deg": 4.082578266573895,
+    "freeze_frac": 0.015047879616963064,
+    "ground_penetration_frac": 0.9318181818181818,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007891875373973348,
+    "foot_height_p5_m": -0.006109281650756439,
+    "foot_height_p50_m": -0.003910671047614665,
+    "foot_height_p95_m": 4.029888504721714e-05,
+    "foot_height_max_m": 0.0006967807591396168,
+    "boundary_root_mean_m": 0.017529193034681242,
+    "boundary_root_max_m": 0.017783849650195017,
+    "boundary_rotation_mean_deg": 1.3478920981594322,
+    "boundary_rotation_max_deg": 5.405439638645047,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.20150555742560153,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.14830780956453743,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.9040694138391857,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 4.082578266573895,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.015047879616963064,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007891875373973348,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.017783849650195017,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.405439638645047,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w04-walk.json": {
+   "label": "w04",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.1896257646919257,
+    "foot_slide_right_m": 0.19005741011714733,
+    "foot_slide_max_m": 0.19005741011714733,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.14099102131160607,
+    "jerk_p95_deg": 0.8719572729347411,
+    "jerk_max_deg": 4.053585929916445,
+    "freeze_frac": 0.014363885088919288,
+    "ground_penetration_frac": 0.9090909090909091,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007797144202202878,
+    "foot_height_p5_m": -0.006097101215833924,
+    "foot_height_p50_m": -0.0025081501818623488,
+    "foot_height_p95_m": 0.0002549206381183363,
+    "foot_height_max_m": 0.0011753092368269429,
+    "boundary_root_mean_m": 0.016305890563461066,
+    "boundary_root_max_m": 0.016518822339803375,
+    "boundary_rotation_mean_deg": 1.3274644459834501,
+    "boundary_rotation_max_deg": 5.718267189593858,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.19005741011714733,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.14099102131160607,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.8719572729347411,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 4.053585929916445,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.014363885088919288,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007797144202202878,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.016518822339803375,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.718267189593858,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w05-walk.json": {
+   "label": "w05",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.19066866267361332,
+    "foot_slide_right_m": 0.19012234858028892,
+    "foot_slide_max_m": 0.19066866267361332,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.14727328984544183,
+    "jerk_p95_deg": 0.8019467730837443,
+    "jerk_max_deg": 2.9373043668363774,
+    "freeze_frac": 0.013679890560875513,
+    "ground_penetration_frac": 0.9772727272727273,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007861256217093413,
+    "foot_height_p5_m": -0.005941878529798329,
+    "foot_height_p50_m": -0.0032454952783606775,
+    "foot_height_p95_m": -0.0008441268879716499,
+    "foot_height_max_m": 2.138872662768576e-05,
+    "boundary_root_mean_m": 0.015943080368432325,
+    "boundary_root_max_m": 0.016170710891620244,
+    "boundary_rotation_mean_deg": 1.3487852552133763,
+    "boundary_rotation_max_deg": 5.687812435241324,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.19066866267361332,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.14727328984544183,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.8019467730837443,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 2.9373043668363774,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.013679890560875513,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007861256217093413,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.016170710891620244,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.687812435241324,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w06-walk.json": {
+   "label": "w06",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.17729821664709625,
+    "foot_slide_right_m": 0.1955564033585025,
+    "foot_slide_max_m": 0.1955564033585025,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.1460900651199419,
+    "jerk_p95_deg": 0.9770129310785473,
+    "jerk_max_deg": 4.201807538409435,
+    "freeze_frac": 0.012995896032831737,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.00790073754214803,
+    "foot_height_p5_m": -0.006157948470199117,
+    "foot_height_p50_m": -0.003987248922072232,
+    "foot_height_p95_m": -0.0022126262503028805,
+    "foot_height_max_m": -0.0020902974670983024,
+    "boundary_root_mean_m": 0.01968330328275668,
+    "boundary_root_max_m": 0.01974211091379417,
+    "boundary_rotation_mean_deg": 1.3099559009322632,
+    "boundary_rotation_max_deg": 4.108687133860704,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.1955564033585025,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.1460900651199419,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.9770129310785473,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 4.201807538409435,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.012995896032831737,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.00790073754214803,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.01974211091379417,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 4.108687133860704,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w07-walk.json": {
+   "label": "w07",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.1883818098994825,
+    "foot_slide_right_m": 0.19850599474155936,
+    "foot_slide_max_m": 0.19850599474155936,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.145342108431386,
+    "jerk_p95_deg": 0.9029293878111132,
+    "jerk_max_deg": 3.3308480451399065,
+    "freeze_frac": 0.013679890560875513,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007867892405142421,
+    "foot_height_p5_m": -0.006207401315687113,
+    "foot_height_p50_m": -0.004067556902997593,
+    "foot_height_p95_m": -0.0018455099085590994,
+    "foot_height_max_m": -0.0017865095354842597,
+    "boundary_root_mean_m": 0.01866053159975043,
+    "boundary_root_max_m": 0.018946062693045596,
+    "boundary_rotation_mean_deg": 1.3325905547081793,
+    "boundary_rotation_max_deg": 5.509080656231421,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.19850599474155936,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.145342108431386,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.9029293878111132,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 3.3308480451399065,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.013679890560875513,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007867892405142421,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.018946062693045596,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.509080656231421,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w08-walk.json": {
+   "label": "w08",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.18492009889155941,
+    "foot_slide_right_m": 0.1921702095907256,
+    "foot_slide_max_m": 0.1921702095907256,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.1358618310911018,
+    "jerk_p95_deg": 0.8808454061770848,
+    "jerk_max_deg": 3.1967686549451564,
+    "freeze_frac": 0.01573187414500684,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007918479101699252,
+    "foot_height_p5_m": -0.006098571032805204,
+    "foot_height_p50_m": -0.0037791241428781746,
+    "foot_height_p95_m": -0.0016773915532164452,
+    "foot_height_max_m": -0.0015575895790874567,
+    "boundary_root_mean_m": 0.01909632165918158,
+    "boundary_root_max_m": 0.019332224099581005,
+    "boundary_rotation_mean_deg": 1.301087757377071,
+    "boundary_rotation_max_deg": 5.302457182418626,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.1921702095907256,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.1358618310911018,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.8808454061770848,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 3.1967686549451564,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.01573187414500684,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007918479101699252,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.019332224099581005,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.302457182418626,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w09-walk.json": {
+   "label": "w09",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.19771826653063715,
+    "foot_slide_right_m": 0.20505156901285157,
+    "foot_slide_max_m": 0.20505156901285157,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.14707212863618246,
+    "jerk_p95_deg": 0.9364894811217915,
+    "jerk_max_deg": 3.458781149987472,
+    "freeze_frac": 0.015047879616963064,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007923454115714313,
+    "foot_height_p5_m": -0.005919868187498444,
+    "foot_height_p50_m": -0.003297057566908252,
+    "foot_height_p95_m": -0.0013580164549978082,
+    "foot_height_max_m": -0.0010550349019500804,
+    "boundary_root_mean_m": 0.013433823051383319,
+    "boundary_root_max_m": 0.013664401372293637,
+    "boundary_rotation_mean_deg": 1.3281634940297042,
+    "boundary_rotation_max_deg": 4.993827027136182,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.20505156901285157,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.14707212863618246,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.9364894811217915,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 3.458781149987472,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.015047879616963064,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007923454115714313,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.013664401372293637,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 4.993827027136182,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w10-walk.json": {
+   "label": "w10",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.18933927934898595,
+    "foot_slide_right_m": 0.1963724218776982,
+    "foot_slide_max_m": 0.1963724218776982,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.13891884272380065,
+    "jerk_p95_deg": 0.8480282919334389,
+    "jerk_max_deg": 4.005899358172302,
+    "freeze_frac": 0.018467852257181942,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007908745681957284,
+    "foot_height_p5_m": -0.006137269670161495,
+    "foot_height_p50_m": -0.0036468152354518658,
+    "foot_height_p95_m": -0.0016960634037679685,
+    "foot_height_max_m": -0.0010878490754084313,
+    "boundary_root_mean_m": 0.018027960512043608,
+    "boundary_root_max_m": 0.018281846428045347,
+    "boundary_rotation_mean_deg": 1.2607210388744994,
+    "boundary_rotation_max_deg": 4.597918622021569,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.1963724218776982,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.13891884272380065,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.8480282919334389,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 4.005899358172302,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.018467852257181942,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007908745681957284,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.018281846428045347,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 4.597918622021569,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w11-walk.json": {
+   "label": "w11",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.18652713503511145,
+    "foot_slide_right_m": 0.1946459578312809,
+    "foot_slide_max_m": 0.1946459578312809,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.146184664920217,
+    "jerk_p95_deg": 0.9198216304629656,
+    "jerk_max_deg": 3.2850856490495923,
+    "freeze_frac": 0.014363885088919288,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007823491551566353,
+    "foot_height_p5_m": -0.006021731825451167,
+    "foot_height_p50_m": -0.003460406718894162,
+    "foot_height_p95_m": -0.0015268755759317134,
+    "foot_height_max_m": -0.0011967421411585681,
+    "boundary_root_mean_m": 0.01826267190803581,
+    "boundary_root_max_m": 0.01849018561229343,
+    "boundary_rotation_mean_deg": 1.3223628203163973,
+    "boundary_rotation_max_deg": 5.139222068627419,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.1946459578312809,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.146184664920217,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.9198216304629656,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 3.2850856490495923,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.014363885088919288,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007823491551566353,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.01849018561229343,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.139222068627419,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w12-walk.json": {
+   "label": "w12",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.17290197453989922,
+    "foot_slide_right_m": 0.18750472836753923,
+    "foot_slide_max_m": 0.18750472836753923,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.13561175332064376,
+    "jerk_p95_deg": 0.9316727569047822,
+    "jerk_max_deg": 4.209057729338396,
+    "freeze_frac": 0.01573187414500684,
+    "ground_penetration_frac": 0.9772727272727273,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007745349955360293,
+    "foot_height_p5_m": -0.005910078789099739,
+    "foot_height_p50_m": -0.003132695137310312,
+    "foot_height_p95_m": -0.0006219766003266294,
+    "foot_height_max_m": 8.397651515853685e-05,
+    "boundary_root_mean_m": 0.02279821786342829,
+    "boundary_root_max_m": 0.022931211492197942,
+    "boundary_rotation_mean_deg": 1.3318231611926863,
+    "boundary_rotation_max_deg": 5.420309539575027,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.18750472836753923,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.13561175332064376,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.9316727569047822,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 4.209057729338396,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.01573187414500684,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007745349955360293,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.022931211492197942,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.420309539575027,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w13-walk.json": {
+   "label": "w13",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.19881355339442172,
+    "foot_slide_right_m": 0.19646564924729434,
+    "foot_slide_max_m": 0.19881355339442172,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.15310060552358346,
+    "jerk_p95_deg": 0.8772070665510137,
+    "jerk_max_deg": 3.5070628755397575,
+    "freeze_frac": 0.012995896032831737,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007961481782600185,
+    "foot_height_p5_m": -0.006172708804435496,
+    "foot_height_p50_m": -0.0034622668772863567,
+    "foot_height_p95_m": -0.0009499520746130871,
+    "foot_height_max_m": -0.0007147604234620485,
+    "boundary_root_mean_m": 0.014394612456342975,
+    "boundary_root_max_m": 0.014667822589762439,
+    "boundary_rotation_mean_deg": 1.3385304041631636,
+    "boundary_rotation_max_deg": 5.6279080293255666,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.19881355339442172,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.15310060552358346,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.8772070665510137,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 3.5070628755397575,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.012995896032831737,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007961481782600185,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.014667822589762439,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.6279080293255666,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w14-walk.json": {
+   "label": "w14",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.18698761210375553,
+    "foot_slide_right_m": 0.19638936893707631,
+    "foot_slide_max_m": 0.19638936893707631,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.13553452888166884,
+    "jerk_p95_deg": 0.9383200021392654,
+    "jerk_max_deg": 2.9815219447175147,
+    "freeze_frac": 0.015047879616963064,
+    "ground_penetration_frac": 0.9772727272727273,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007704418885796219,
+    "foot_height_p5_m": -0.005945749949533748,
+    "foot_height_p50_m": -0.0025853706915704815,
+    "foot_height_p95_m": -0.00014273482771266492,
+    "foot_height_max_m": 0.0002195785621786489,
+    "boundary_root_mean_m": 0.019095865518594643,
+    "boundary_root_max_m": 0.019278839022117075,
+    "boundary_rotation_mean_deg": 1.3821883322045267,
+    "boundary_rotation_max_deg": 5.77891510623802,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.19638936893707631,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.13553452888166884,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.9383200021392654,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 2.9815219447175147,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.015047879616963064,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007704418885796219,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.019278839022117075,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 5.77891510623802,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  },
+  "batch-B16-w15-walk.json": {
+   "label": "w15",
+   "style": "walk",
+   "frames": 44,
+   "passed": true,
+   "values": {
+    "structure_problems": 0,
+    "structure_problem_text": "",
+    "foot_slide_left_m": 0.17663818251478028,
+    "foot_slide_right_m": 0.1877551243917125,
+    "foot_slide_max_m": 0.1877551243917125,
+    "contact_fraction_max": 1.0,
+    "contact_frames_left": 44,
+    "jerk_p50_deg": 0.14072680194139273,
+    "jerk_p95_deg": 0.8403343017824734,
+    "jerk_max_deg": 3.5305516033062814,
+    "freeze_frac": 0.012995896032831737,
+    "ground_penetration_frac": 1.0,
+    "ground_airborne_frac": 0.0,
+    "foot_height_min_m": -0.007967749419924706,
+    "foot_height_p5_m": -0.006300244631390618,
+    "foot_height_p50_m": -0.003724937405880098,
+    "foot_height_p95_m": -0.002167974244307356,
+    "foot_height_max_m": -0.002032148225095381,
+    "boundary_root_mean_m": 0.021343695958316387,
+    "boundary_root_max_m": 0.0214010592228983,
+    "boundary_rotation_mean_deg": 1.3175554521263304,
+    "boundary_rotation_max_deg": 4.819912210426158,
+    "passed": true
+   },
+   "verdicts": [
+    {
+     "key": "foot_slide_max_m",
+     "value": 0.1877551243917125,
+     "limit": 1.21,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_p50_deg",
+     "value": 0.14072680194139273,
+     "limit": 0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "jerk_p95_deg",
+     "value": 0.8403343017824734,
+     "limit": 4.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "jerk_max_deg",
+     "value": 3.5305516033062814,
+     "limit": 30.0,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "freeze_frac",
+     "value": 0.012995896032831737,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "foot_height_min_m",
+     "value": -0.007967749419924706,
+     "limit": -0.05,
+     "direction": "min",
+     "passed": true
+    },
+    {
+     "key": "ground_airborne_frac",
+     "value": 0.0,
+     "limit": 0.1,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_root_max_m",
+     "value": 0.0214010592228983,
+     "limit": 0.15,
+     "direction": "max",
+     "passed": true
+    },
+    {
+     "key": "boundary_rotation_max_deg",
+     "value": 4.819912210426158,
+     "limit": 26.0,
+     "direction": "max",
+     "passed": true
+    }
+   ],
+   "structure_problems": []
+  }
+ },
+ "passed": 16,
+ "failed": 0
+}

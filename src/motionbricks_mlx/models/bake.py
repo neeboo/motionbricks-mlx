@@ -481,6 +481,12 @@ class BatchResult:
     # the single-pass arm's host pass can be re-timed with every row already
     # resolved (``inject=``).  Empty for the round-4 driver.
     rows: dict[str, list] = field(default_factory=dict)
+    # Round 7 (this round): the full :class:`Motion` each scenario finished with,
+    # in scenario order, so a bake can be *exported* as a plan document (which
+    # needs the four placed target keyframes, not just roots and rotations).
+    # Additive and default-empty: nothing on the accepted path reads it, and the
+    # round-4 driver leaves it empty.
+    motions: list = field(default_factory=list)
 
 
 def drive_batch(pipeline, bundle, scenarios: list[Scenario],
@@ -1123,10 +1129,12 @@ def drive_batch_single_pass(pipeline, bundle, scenarios: list[Scenario],
     if profile is not None:
         started = time.perf_counter()
     runs: list[Run] = []
+    motions: list = []
     for session in sessions:
         motion, info = session.agent.finish_plan(session.result, session.frame,
                                                  session.constraints, session.command)
         trace = info.get("trace", {})
+        motions.append(motion)
         runs.append(Run(
             session.scenario.label, int(info["selected_tokens"]),
             np.asarray(trace.get("pose.tokens", np.zeros(0)), np.float32),
@@ -1142,7 +1150,8 @@ def drive_batch_single_pass(pipeline, bundle, scenarios: list[Scenario],
          for name in STAGE_ORDER},
         [session.agent for session in sessions],
         {name: [session.rows.get(name) for session in sessions]
-         for name in order})
+         for name in order},
+        motions)
 
 
 def host_pass_timing_single_pass(pipeline, bundle, scenarios: list[Scenario],

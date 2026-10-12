@@ -1,0 +1,12 @@
+label style             seed  fr  tok  uni  dur  roots    rot  worst_roots_m    worst_rot  angle_deg
+  s00 idle                 5  24  yes  yes  yes     NO     NO      1.788e-07    1.729e-06     0.0527
+  s01 idle                 9  24  yes  yes  yes     NO     NO      1.271e-07    2.280e-06     0.0474
+  s02 walk_zombie          6  24  yes  yes  yes     NO     NO      2.980e-07    3.248e-06     0.0461
+  s03 walk_zombie          8  24  yes  yes  yes     NO     NO      2.980e-07    6.333e-06     0.0506
+  s04 stealth_walk         1  24  yes  yes  yes     NO     NO      4.768e-07    6.542e-06     0.0478
+  s05 stealth_walk         3  24  yes  yes  yes     NO     NO      2.980e-07    3.614e-06     0.0454
+  s06 walk_stealth         7  24  yes  yes  yes     NO     NO      2.980e-07    2.354e-06     0.0475
+  s07 walk_stealth        13  24  yes  yes  yes     NO     NO      5.960e-07    2.176e-06     0.0407
+identity: tokens 8/8  uniforms 8/8  duration 8/8  roots 0/8  rotations 0/8
+0/384 token decisions differ; worst roots 5.960e-07 m, rotations 6.542e-06, angle 0.0527 deg, world 2.469e-06 m
+wrote artifacts/bake-2026-10-12/diverse/compare-B8.json

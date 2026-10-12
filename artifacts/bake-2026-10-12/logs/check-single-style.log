@@ -1,0 +1,28 @@
+group B=B16: 12/12 required fields present
+    batch_size                       16
+    bake_tier                        "reproducible"
+    bake_stages                      ["decode", "decoder", "pose", "root"]
+    bake_stage_switches              ["bake_root_batch", "bake_decoder_batch", "bake_decode_batch"]
+    bake_grouping                    {"mode": "duration-homogeneous", "token_groups": {"11": 16}}
+    bake_campaign_scenarios          16
+    bake_token_decisions_differing   0
+    bake_worst_roots_m               1.1399388313293457e-06
+    bake_worst_rotations             2.7533620595932007e-05
+    bake_safety_ratio                0.4088803705478358
+    bake_min_decision_margin         0.0029854774475097656
+    bake_action_bit_identical        false
+group B=B8: 12/12 required fields present
+    batch_size                       8
+    bake_tier                        "reproducible"
+    bake_stages                      ["decode", "decoder", "pose", "root"]
+    bake_stage_switches              ["bake_root_batch", "bake_decoder_batch", "bake_decode_batch"]
+    bake_grouping                    {"mode": "duration-homogeneous", "token_groups": {"11": 8}}
+    bake_campaign_scenarios          8
+    bake_token_decisions_differing   0
+    bake_worst_roots_m               6.258487701416016e-07
+    bake_worst_rotations             8.434057235717773e-06
+    bake_safety_ratio                0.5289889793962625
+    bake_min_decision_margin         0.0029854774475097656
+    bake_action_bit_identical        false
+manifest check: PASS
+wrote artifacts/bake-2026-10-12/single-style/manifest-check.json

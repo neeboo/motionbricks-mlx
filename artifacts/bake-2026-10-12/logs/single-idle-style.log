@@ -1,0 +1,4 @@
+resolved bake switches: {'bake_root_batch': False, 'bake_decoder_batch': False, 'bake_decode_batch': False}
+load[before] [18.98, 14.4, 11.76]
+load[after] [18.98, 14.4, 11.76]
+wrote 16 single-scenario products to artifacts/bake-2026-10-12/idle-style/plans/single-B16

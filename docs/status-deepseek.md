@@ -452,3 +452,63 @@ B=16 1.2207× [1.132–1.335]**，B=1 0.9925×（中性，与"B=1 永不使用"�
 `scripts/eval_*.py`、`tests/test_eval_*.py`、`motion-representation.md`、`README.md`、`NOTICE`、
 `LICENSE`、`pyproject.toml` 未动；参考仓库只读；`mlx_plan.py`/`mlx_align.py` 语义未改；
 所有 `mlx_plan.py` 调用都显式带 `--out`；**无 push**。
+
+---
+
+# Round 7（A 侧）：把"数字漂亮"变成"看得见的成品 + 有据可查的 manifest"
+
+**这一轮不做新优化**：判据、开关、默认路径一行不改（唯一 src 改动是
+`BatchResult.motions` 追加一个默认空字段）。本轮把前六轮的烘焙**做成成品**并第一次在
+**风格多样的库**上重跑战役。
+
+**① 三件事**：`scripts/mlx_bake_library.py`（新）＝ `batch`（release 配置 `--bake-stages all+decode`
+＋ 12 项 manifest）／`single`（**另一个进程**、零 bake 开关的 B=1 语义）／`compare`（逐场景等价性）／
+`check`（对**写盘的** manifest 逐字段核对）／`metrics`（用 C 线阈值评本轮产物）／`pairdoc`
+（同场景两条臂拼成一份渲染文档）。`tools/side_by_side_gif.py`（新）只做拼接，骨架像素全部来自
+参考侧 `~/dev/motion-bricks-cpp/tools/render_motion.py`（未改一行；本仓库 `.venv` 无 Pillow，
+所以用系统 Homebrew python 3.14 + Pillow 12.2.0，没往 `.venv` 装包、没动 `pyproject.toml`）。
+
+**② 实测结果（每个 B 单独进程，load 6.9–19.6，全部 `--strict` 通过）**：
+
+| campaign | B | token 分组（实测） | tier | 比值 |
+|---|---|---|---|---|
+| diverse（8 真实风格 / 14 seed / 24 帧同构） | 8 / 16 | `{6:8}` / `{6:16}` | **draft** | **1.4402 / 1.2716** |
+| single-style（`walk` / seed 1..16 / 44 帧同构） | 8 / 16 | `{11:8}` / `{11:16}` | reproducible | **0.5290 / 0.4089** |
+| idle-style（`idle` / seed 1..16 / 24 帧同构） | 16 | `{6:16}` | reproducible | **0.2137** |
+
+**新发现（本轮最重要的数）**：**同一个脚本、同一个 release 配置、同样时长同构，库里一旦有多风格，
+冻结的 0008 全局规则就把档位从 release 打到 draft。** 归因：全局比值的分子与分母来自**不同风格**——
+最大 pose 扰动由 `idle` 供（它单独烘时 7.7e-03，是 `walk` 的 6 倍），最紧余量由 `walk_zombie` 供
+（2.99e-03，比 `idle` 的 3.6e-02 紧 12 倍）；**逐场景自己的比值最大只有 0.142**。
+`single-style` 的 0.5290 / 0.4089 与最大扰动 1.2207e-03、`bake_worst_rotations` 2.753e-05
+与第 5/6 轮**逐位复现**，说明两把尺子是同一把。**没有改判据、没有挑场景去把 draft 抬回 release。**
+
+**③ 12 项 manifest**：三份 manifest、五个 group 全部 **12/12**（对写盘文件核对，`manifest check: PASS`），
+`bake_action_bit_identical` 如实 `false`。
+
+**④ 等价性**：5 个 group 的全部 **64 个场景** tokens / uniforms / duration **逐位一致**，
+**4032 个 token 决策里 0 个不同**；
+最终动作**不逐位**（0/84），最差 roots **1.140e-06 m**、rotations **2.753e-05**、角 0.0539°
+（旋转角列的地板）；`world_positions_xyz` 最差 1.798e-05 m。
+
+**⑤ 质量门**：`scripts/eval_gate.py --no-collect` 原样调用 → 10 组全 PASS + cross-impl 2 对 PASS +
+5 个负控全触发 → **GATE PASS**（exit 0）。另外把本轮 64 份产物喂给同一套 C 线阈值：
+diverse 14/16、single-style 16/16，**批量臂与单场景臂判定逐场景相同**，336 个数值最大差 5.6e-03
+（红的两份是 `walk_happy_dance`，两条臂一样红——舞蹈动作 vs 行走阈值）。
+
+**⑥ 看得见的成品**：4 个场景 × 两条臂的 GIF（idle / walk_zombie / stealth_walk / walk），
+外加 4 个并排对照。**两条臂的 GIF 逐字节相同**（0/38,574,400 个像素不同），但两条臂的 roots
+确实不同（最差 4.0e-07 m，亚像素）。
+
+**⑦ 门禁**：GPU `ccda1952…` / CPU `262e77d4…` 改动前后各验一次，**四次都逐字节一致**；
+`pytest`（HEAD 已跟踪的测试 + 本轮新文件）**214 passed / 1 skipped**（起点 209/1，只增）；
+全量 `pytest` 是 240 passed / 1 skipped / **1 failed**，失败项来自**同工作区另一个 agent 正在做的
+viewer**（`scripts/mlx_viewer.py`、`viewer/`、`tests/test_viewer_*.py`，HEAD 未跟踪），我没碰。
+成品是 `docs/BATCH-BAKE-RUN.md`，产物在 `artifacts/bake-2026-10-12/`（含"哪些进 git"的说明）。
+
+**红线遵守**：只新增 `scripts/mlx_bake_library.py`、`tools/side_by_side_gif.py`、
+`tests/test_mlx_bake_export.py`、`docs/BATCH-BAKE-RUN.md`、`artifacts/bake-2026-10-12/**`，
+只改 `src/motionbricks_mlx/models/bake.py`（追加）与本文件；`training/**`、`train_*.py`、`eval/**`、
+`scripts/eval_*.py`、`tests/test_eval_*.py`、`motion-representation.md`、`README.md`、`NOTICE`、
+`LICENSE`、`pyproject.toml` 未动；`mlx_plan.py` / `mlx_align.py` / `mlx_bench.py` 语义未改，
+所有 `mlx_plan.py` 调用显式带 `--out`；参考仓库全程只读（`find -newermt` 证明零修改）；**无 push**。

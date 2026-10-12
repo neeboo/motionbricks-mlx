@@ -1,0 +1,20 @@
+label style             seed  fr  tok  uni  dur  roots    rot  worst_roots_m    worst_rot  angle_deg
+  i00 idle                 1  24  yes  yes  yes     NO     NO      1.676e-07    2.503e-06     0.0521
+  i01 idle                 2  24  yes  yes  yes     NO     NO      1.192e-07    2.615e-06     0.0450
+  i02 idle                 3  24  yes  yes  yes     NO     NO      2.583e-07    3.874e-06     0.0450
+  i03 idle                 4  24  yes  yes  yes     NO     NO      1.922e-07    2.533e-06     0.0479
+  i04 idle                 5  24  yes  yes  yes     NO     NO      1.582e-07    3.546e-06     0.0526
+  i05 idle                 6  24  yes  yes  yes     NO     NO      2.662e-07    2.623e-06     0.0436
+  i06 idle                 7  24  yes  yes  yes     NO     NO      1.788e-07    2.950e-06     0.0460
+  i07 idle                 8  24  yes  yes  yes     NO     NO      1.785e-07    2.891e-06     0.0483
+  i08 idle                 9  24  yes  yes  yes     NO     NO      1.483e-07    2.325e-06     0.0474
+  i09 idle                10  24  yes  yes  yes     NO     NO      1.732e-07    1.878e-06     0.0399
+  i10 idle                11  24  yes  yes  yes     NO     NO      2.384e-07    2.626e-06     0.0446
+  i11 idle                12  24  yes  yes  yes     NO     NO      2.509e-07    2.310e-06     0.0526
+  i12 idle                13  24  yes  yes  yes     NO     NO      2.258e-07    2.727e-06     0.0417
+  i13 idle                14  24  yes  yes  yes     NO     NO      1.788e-07    2.608e-06     0.0487
+  i14 idle                15  24  yes  yes  yes     NO     NO      1.329e-07    2.474e-06     0.0477
+  i15 idle                16  24  yes  yes  yes     NO     NO      1.402e-07    2.667e-06     0.0480
+identity: tokens 16/16  uniforms 16/16  duration 16/16  roots 0/16  rotations 0/16
+0/768 token decisions differ; worst roots 2.662e-07 m, rotations 3.874e-06, angle 0.0526 deg, world 1.521e-06 m
+wrote artifacts/bake-2026-10-12/idle-style/compare-B16.json

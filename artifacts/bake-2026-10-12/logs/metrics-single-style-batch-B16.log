@@ -1,0 +1,18 @@
+16 documents: 16 pass, 0 fail (structure + metrics 1-4, 6)
+  PASS  batch-B16-w00-walk.json                      frames=44  walk              
+  PASS  batch-B16-w01-walk.json                      frames=44  walk              
+  PASS  batch-B16-w02-walk.json                      frames=44  walk              
+  PASS  batch-B16-w03-walk.json                      frames=44  walk              
+  PASS  batch-B16-w04-walk.json                      frames=44  walk              
+  PASS  batch-B16-w05-walk.json                      frames=44  walk              
+  PASS  batch-B16-w06-walk.json                      frames=44  walk              
+  PASS  batch-B16-w07-walk.json                      frames=44  walk              
+  PASS  batch-B16-w08-walk.json                      frames=44  walk              
+  PASS  batch-B16-w09-walk.json                      frames=44  walk              
+  PASS  batch-B16-w10-walk.json                      frames=44  walk              
+  PASS  batch-B16-w11-walk.json                      frames=44  walk              
+  PASS  batch-B16-w12-walk.json                      frames=44  walk              
+  PASS  batch-B16-w13-walk.json                      frames=44  walk              
+  PASS  batch-B16-w14-walk.json                      frames=44  walk              
+  PASS  batch-B16-w15-walk.json                      frames=44  walk              
+wrote artifacts/bake-2026-10-12/single-style/metrics-batch-B16.json

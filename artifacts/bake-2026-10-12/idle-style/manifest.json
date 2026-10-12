@@ -1,0 +1,817 @@
+{
+ "schema": "motionbricks_mlx.bake.library/1",
+ "created_local": "2026-10-12T23:26:42+0800",
+ "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+ "styles_dir": "/Users/ghostcorn/dev/motion-bricks-cpp/repo/generated/styles",
+ "device": "gpu",
+ "python": "3.13.12",
+ "release_stage_flag": "all+decode",
+ "release_switches": [
+  "bake_root_batch=1",
+  "bake_decoder_batch=1",
+  "bake_decode_batch=1"
+ ],
+ "campaign_name": "idle-style",
+ "campaign_definition": [
+  {
+   "label": "i00",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 1
+  },
+  {
+   "label": "i01",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 2
+  },
+  {
+   "label": "i02",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 3
+  },
+  {
+   "label": "i03",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 4
+  },
+  {
+   "label": "i04",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 5
+  },
+  {
+   "label": "i05",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 6
+  },
+  {
+   "label": "i06",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 7
+  },
+  {
+   "label": "i07",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 8
+  },
+  {
+   "label": "i08",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 9
+  },
+  {
+   "label": "i09",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 10
+  },
+  {
+   "label": "i10",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 11
+  },
+  {
+   "label": "i11",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 12
+  },
+  {
+   "label": "i12",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 13
+  },
+  {
+   "label": "i13",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 14
+  },
+  {
+   "label": "i14",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 15
+  },
+  {
+   "label": "i15",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 16
+  }
+ ],
+ "groups": {
+  "B16": {
+   "batch_size": 16,
+   "bake_tier": "reproducible",
+   "bake_stages": [
+    "decode",
+    "decoder",
+    "pose",
+    "root"
+   ],
+   "bake_stage_switches": [
+    "bake_root_batch",
+    "bake_decoder_batch",
+    "bake_decode_batch"
+   ],
+   "bake_grouping": {
+    "mode": "duration-homogeneous",
+    "token_groups": {
+     "6": 16
+    }
+   },
+   "bake_campaign_scenarios": 16,
+   "bake_token_decisions_differing": 0,
+   "bake_worst_roots_m": 2.662418410181999e-07,
+   "bake_worst_rotations": 3.874301910400391e-06,
+   "bake_safety_ratio": 0.21370007934408886,
+   "bake_min_decision_margin": 0.03605842590332031,
+   "bake_action_bit_identical": false,
+   "manifest_check": {
+    "required_fields": [
+     "batch_size",
+     "bake_tier",
+     "bake_stages",
+     "bake_stage_switches",
+     "bake_grouping",
+     "bake_campaign_scenarios",
+     "bake_token_decisions_differing",
+     "bake_worst_roots_m",
+     "bake_worst_rotations",
+     "bake_safety_ratio",
+     "bake_min_decision_margin",
+     "bake_action_bit_identical"
+    ],
+    "present_fields": [
+     "batch_size",
+     "bake_tier",
+     "bake_stages",
+     "bake_stage_switches",
+     "bake_grouping",
+     "bake_campaign_scenarios",
+     "bake_token_decisions_differing",
+     "bake_worst_roots_m",
+     "bake_worst_rotations",
+     "bake_safety_ratio",
+     "bake_min_decision_margin",
+     "bake_action_bit_identical"
+    ],
+    "missing_fields": [],
+    "complete": true,
+    "release_ratio_threshold": 0.7,
+    "grouped_above_b": 8
+   },
+   "grouping_declared": "duration-homogeneous",
+   "grouping_observed": "duration-homogeneous",
+   "token_groups": {
+    "6": 16
+   },
+   "timing": {
+    "repeats": 5,
+    "serial_ms_p50": 454.5423339586705,
+    "single_pass_ms_p50": 94.73224985413253,
+    "speedup": 4.798179444260732,
+    "single_pass_ms_per_scenario": 5.920765615883283,
+    "throughput_per_s": 168.89707596554067,
+    "serial_times_ms": [
+     435.548875015229,
+     505.2371248602867,
+     535.4992500506341,
+     454.5423339586705,
+     453.9020420052111
+    ],
+    "single_pass_times_ms": [
+     82.50320795923471,
+     104.67545804567635,
+     95.0090829282999,
+     94.73224985413253,
+     92.80774998478591
+    ]
+   },
+   "reference_single_scenario_ms_p50": 25.067478884011507,
+   "reference_single_scenario_ms": [
+    74.0731661207974,
+    30.75441694818437,
+    23.014833219349384,
+    23.246249882504344,
+    23.789542028680444,
+    24.976582964882255,
+    25.27120802551508,
+    25.668625021353364,
+    25.951958959922194,
+    37.25783294066787,
+    33.864500001072884,
+    21.95533295162022,
+    24.489083094522357,
+    23.498999886214733,
+    25.094332871958613,
+    25.0406248960644
+   ],
+   "perturbations": {
+    "duration_logits": 3.814697265625e-06,
+    "root_values": 9.238719940185547e-07,
+    "pose_logits": 0.0077056884765625,
+    "decoded": 2.6948750019073486e-05
+   },
+   "margins": {
+    "pose_margin": 0.03605842590332031,
+    "duration_margin": 0.42821192741394043
+   },
+   "safety": {
+    "pose_perturbation": 0.0077056884765625,
+    "pose_margin": 0.03605842590332031,
+    "pose_ratio": 0.21370007934408886,
+    "duration_perturbation": 3.814697265625e-06,
+    "duration_margin": 0.42821192741394043,
+    "duration_ratio": 8.908433001067342e-06
+   },
+   "safety_detail": {
+    "note": "attribution only; the recorded tier is the global max/min rule of 0008",
+    "scenarios": [
+     {
+      "label": "i00",
+      "style": "idle",
+      "seed": 1,
+      "pose_perturbation": 0.00128173828125,
+      "pose_margin": 0.10290050506591797,
+      "pose_ratio": 0.012456093198268752,
+      "duration_perturbation": 1.1920928955078125e-06,
+      "duration_margin": 0.7562108039855957,
+      "duration_ratio": 1.5764028882223156e-06
+     },
+     {
+      "label": "i01",
+      "style": "idle",
+      "seed": 2,
+      "pose_perturbation": 0.00634765625,
+      "pose_margin": 0.26123809814453125,
+      "pose_ratio": 0.024298355772319733,
+      "duration_perturbation": 2.384185791015625e-07,
+      "duration_margin": 0.7745497226715088,
+      "duration_ratio": 3.078157181171405e-07
+     },
+     {
+      "label": "i02",
+      "style": "idle",
+      "seed": 3,
+      "pose_perturbation": 0.0045318603515625,
+      "pose_margin": 0.44682884216308594,
+      "pose_ratio": 0.01014227355965629,
+      "duration_perturbation": 9.5367431640625e-07,
+      "duration_margin": 0.8118393421173096,
+      "duration_ratio": 1.1747081804621947e-06
+     },
+     {
+      "label": "i03",
+      "style": "idle",
+      "seed": 4,
+      "pose_perturbation": 0.0043792724609375,
+      "pose_margin": 0.32765960693359375,
+      "pose_ratio": 0.013365310731832258,
+      "duration_perturbation": 1.430511474609375e-06,
+      "duration_margin": 0.8509886264801025,
+      "duration_ratio": 1.6809995223159692e-06
+     },
+     {
+      "label": "i04",
+      "style": "idle",
+      "seed": 5,
+      "pose_perturbation": 0.00144195556640625,
+      "pose_margin": 0.164764404296875,
+      "pose_ratio": 0.008751620670494537,
+      "duration_perturbation": 1.0728836059570312e-06,
+      "duration_margin": 0.8358128070831299,
+      "duration_ratio": 1.2836410220863275e-06
+     },
+     {
+      "label": "i05",
+      "style": "idle",
+      "seed": 6,
+      "pose_perturbation": 0.003173828125,
+      "pose_margin": 0.08494377136230469,
+      "pose_ratio": 0.03736387111260806,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 0.7762019634246826,
+      "duration_ratio": 4.914567915796251e-06
+     },
+     {
+      "label": "i06",
+      "style": "idle",
+      "seed": 7,
+      "pose_perturbation": 0.0077056884765625,
+      "pose_margin": 0.12714195251464844,
+      "pose_ratio": 0.060606969801527175,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 0.7551054954528809,
+      "duration_ratio": 5.051873266181308e-06
+     },
+     {
+      "label": "i07",
+      "style": "idle",
+      "seed": 8,
+      "pose_perturbation": 0.0038604736328125,
+      "pose_margin": 0.3473377227783203,
+      "pose_ratio": 0.011114466928420417,
+      "duration_perturbation": 4.76837158203125e-07,
+      "duration_margin": 0.7586023807525635,
+      "duration_ratio": 6.285732424542139e-07
+     },
+     {
+      "label": "i08",
+      "style": "idle",
+      "seed": 9,
+      "pose_perturbation": 0.0037994384765625,
+      "pose_margin": 0.03605842590332031,
+      "pose_ratio": 0.10536895001322401,
+      "duration_perturbation": 7.152557373046875e-07,
+      "duration_margin": 0.6497106552124023,
+      "duration_ratio": 1.1008834957014168e-06
+     },
+     {
+      "label": "i09",
+      "style": "idle",
+      "seed": 10,
+      "pose_perturbation": 0.0010223388671875,
+      "pose_margin": 1.1047210693359375,
+      "pose_ratio": 0.0009254271467837953,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 0.6286985874176025,
+      "duration_ratio": 6.067609092767296e-06
+     },
+     {
+      "label": "i10",
+      "style": "idle",
+      "seed": 11,
+      "pose_perturbation": 0.003997802734375,
+      "pose_margin": 0.06737518310546875,
+      "pose_ratio": 0.05933642849054467,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 0.5472662448883057,
+      "duration_ratio": 6.970459627751316e-06
+     },
+     {
+      "label": "i11",
+      "style": "idle",
+      "seed": 12,
+      "pose_perturbation": 0.0074310302734375,
+      "pose_margin": 0.4135589599609375,
+      "pose_ratio": 0.017968490572999297,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 0.43935370445251465,
+      "duration_ratio": 8.682519862620829e-06
+     },
+     {
+      "label": "i12",
+      "style": "idle",
+      "seed": 13,
+      "pose_perturbation": 0.0030975341796875,
+      "pose_margin": 0.11594009399414062,
+      "pose_ratio": 0.02671667818247623,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 0.43095922470092773,
+      "duration_ratio": 8.851643141580926e-06
+     },
+     {
+      "label": "i13",
+      "style": "idle",
+      "seed": 14,
+      "pose_perturbation": 0.00360107421875,
+      "pose_margin": 0.21340370178222656,
+      "pose_ratio": 0.016874469321177997,
+      "duration_perturbation": 2.6226043701171875e-06,
+      "duration_margin": 0.43654417991638184,
+      "duration_ratio": 6.0076493761056126e-06
+     },
+     {
+      "label": "i14",
+      "style": "idle",
+      "seed": 15,
+      "pose_perturbation": 0.006622314453125,
+      "pose_margin": 0.07291269302368164,
+      "pose_ratio": 0.09082526208398459,
+      "duration_perturbation": 4.76837158203125e-07,
+      "duration_margin": 0.42919445037841797,
+      "duration_ratio": 1.1110049484160403e-06
+     },
+     {
+      "label": "i15",
+      "style": "idle",
+      "seed": 16,
+      "pose_perturbation": 0.0063629150390625,
+      "pose_margin": 0.14476966857910156,
+      "pose_ratio": 0.043951990092357146,
+      "duration_perturbation": 9.5367431640625e-07,
+      "duration_margin": 0.42821192741394043,
+      "duration_ratio": 2.2271082502668356e-06
+     }
+    ],
+    "max_pose_perturbation": {
+     "label": "i06",
+     "style": "idle",
+     "value": 0.0077056884765625
+    },
+    "min_pose_margin": {
+     "label": "i08",
+     "style": "idle",
+     "value": 0.03605842590332031
+    },
+    "same_scenario": false
+   },
+   "suspensions": 0,
+   "campaign": {
+    "name": "idle-style",
+    "scenarios": [
+     {
+      "label": "i00",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 1
+     },
+     {
+      "label": "i01",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 2
+     },
+     {
+      "label": "i02",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 3
+     },
+     {
+      "label": "i03",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 4
+     },
+     {
+      "label": "i04",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 5
+     },
+     {
+      "label": "i05",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 6
+     },
+     {
+      "label": "i06",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 7
+     },
+     {
+      "label": "i07",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 8
+     },
+     {
+      "label": "i08",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 9
+     },
+     {
+      "label": "i09",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 10
+     },
+     {
+      "label": "i10",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 11
+     },
+     {
+      "label": "i11",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 12
+     },
+     {
+      "label": "i12",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 13
+     },
+     {
+      "label": "i13",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 14
+     },
+     {
+      "label": "i14",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 15
+     },
+     {
+      "label": "i15",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 16
+     }
+    ]
+   },
+   "products": [
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i00-idle.json",
+     "label": "i00",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172456,
+     "sha256": "b5766cf24ab6b08fbf30e166a932e4510860f7294dc23595cd8f5adfcb0291ea"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i01-idle.json",
+     "label": "i01",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172253,
+     "sha256": "34719bff4e454694393448e918671b628c2459132c5f311951645f7d13d72ea5"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i02-idle.json",
+     "label": "i02",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172249,
+     "sha256": "6505b2f04ff7c2018a0dc3bd3d6b3b3bdfc897c2717529f4cbdd817694046fb8"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i03-idle.json",
+     "label": "i03",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172366,
+     "sha256": "d54873a927fd9817fe3231980108449748fa438b572f3f7f5cc63f6e2f3db90e"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i04-idle.json",
+     "label": "i04",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172280,
+     "sha256": "b41f251315463977751f00fd2e81263f8415758901d4220a5194fd758bc6f7c9"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i05-idle.json",
+     "label": "i05",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172446,
+     "sha256": "8dcf204150798610db815176dfe24a33a20b73841c6186d37976346b65de6b68"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i06-idle.json",
+     "label": "i06",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172090,
+     "sha256": "b565fc1452b89aa9ce2fcdb04a4c78cce8fe427d0d9563aa427868748c8ab19f"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i07-idle.json",
+     "label": "i07",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172445,
+     "sha256": "a011d7bf7dd1555d2ae309e0e1c5cd3260f96a58ce2591769f72d45bf904b513"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i08-idle.json",
+     "label": "i08",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172348,
+     "sha256": "cfc866ffb51c4be3b4cc56a2e94a73bc387e9d29639bea2c3c3ef08e1c7650c2"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i09-idle.json",
+     "label": "i09",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172366,
+     "sha256": "b68de01773b518f45b5cd63b86b5dac432375612e38497b4e02f7087bf6385d5"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i10-idle.json",
+     "label": "i10",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172304,
+     "sha256": "02c9ea623ceaac9caba6efe8cc7b789e218302eb80d8ca2f631cfeefb8ae6a37"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i11-idle.json",
+     "label": "i11",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172604,
+     "sha256": "83f8d49e2a3731fba4b94943bde4cf049f094808ccd7df06555a2b222fe369f9"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i12-idle.json",
+     "label": "i12",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172174,
+     "sha256": "b0cf2a24f6f67550edd8722e45a41eb530b97344c3672e0bab572881bdf53323"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i13-idle.json",
+     "label": "i13",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172219,
+     "sha256": "a6a794680ce47bdb8130f9774f183f44a646f50b3cb78abb406c2509bb469c63"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i14-idle.json",
+     "label": "i14",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172458,
+     "sha256": "e731f24c9d077dd9937ad41c0c173530ed68ea0b83f0e0441ac9bc628af51c8b"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/idle-style/plans/batch-B16/batch-B16-i15-idle.json",
+     "label": "i15",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172164,
+     "sha256": "220a01ab81682f6860c357e7d5dcfe2187345c4a852298d09be4fe15e934bfd8"
+    }
+   ],
+   "device": "gpu",
+   "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+   "release_stage_flag": "all+decode",
+   "resolved_switches": {
+    "bake_root_batch": true,
+    "bake_decoder_batch": true,
+    "bake_decode_batch": true
+   },
+   "elapsed_seconds": 0.6,
+   "load_before": [
+    19.59,
+    14.44,
+    11.76
+   ],
+   "load_after": [
+    18.98,
+    14.4,
+    11.76
+   ]
+  }
+ },
+ "load_after": [
+  18.98,
+  14.4,
+  11.76
+ ]
+}

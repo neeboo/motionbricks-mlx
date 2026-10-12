@@ -1,0 +1,114 @@
+{
+ "manifest": "artifacts/bake-2026-10-12/diverse/manifest.json",
+ "required_fields": [
+  "batch_size",
+  "bake_tier",
+  "bake_stages",
+  "bake_stage_switches",
+  "bake_grouping",
+  "bake_campaign_scenarios",
+  "bake_token_decisions_differing",
+  "bake_worst_roots_m",
+  "bake_worst_rotations",
+  "bake_safety_ratio",
+  "bake_min_decision_margin",
+  "bake_action_bit_identical"
+ ],
+ "groups": {
+  "B16": {
+   "present": [
+    "batch_size",
+    "bake_tier",
+    "bake_stages",
+    "bake_stage_switches",
+    "bake_grouping",
+    "bake_campaign_scenarios",
+    "bake_token_decisions_differing",
+    "bake_worst_roots_m",
+    "bake_worst_rotations",
+    "bake_safety_ratio",
+    "bake_min_decision_margin",
+    "bake_action_bit_identical"
+   ],
+   "missing": [],
+   "count": 12,
+   "expected": 12,
+   "values": {
+    "batch_size": 16,
+    "bake_tier": "draft",
+    "bake_stages": [
+     "decode",
+     "decoder",
+     "pose",
+     "root"
+    ],
+    "bake_stage_switches": [
+     "bake_root_batch",
+     "bake_decoder_batch",
+     "bake_decode_batch"
+    ],
+    "bake_grouping": {
+     "mode": "duration-homogeneous",
+     "token_groups": {
+      "6": 16
+     }
+    },
+    "bake_campaign_scenarios": 16,
+    "bake_token_decisions_differing": 0,
+    "bake_worst_roots_m": 1.0728836059570312e-06,
+    "bake_worst_rotations": 1.3649463653564453e-05,
+    "bake_safety_ratio": 1.2716246409192467,
+    "bake_min_decision_margin": 0.0029878616333007812,
+    "bake_action_bit_identical": false
+   }
+  },
+  "B8": {
+   "present": [
+    "batch_size",
+    "bake_tier",
+    "bake_stages",
+    "bake_stage_switches",
+    "bake_grouping",
+    "bake_campaign_scenarios",
+    "bake_token_decisions_differing",
+    "bake_worst_roots_m",
+    "bake_worst_rotations",
+    "bake_safety_ratio",
+    "bake_min_decision_margin",
+    "bake_action_bit_identical"
+   ],
+   "missing": [],
+   "count": 12,
+   "expected": 12,
+   "values": {
+    "batch_size": 8,
+    "bake_tier": "draft",
+    "bake_stages": [
+     "decode",
+     "decoder",
+     "pose",
+     "root"
+    ],
+    "bake_stage_switches": [
+     "bake_root_batch",
+     "bake_decoder_batch",
+     "bake_decode_batch"
+    ],
+    "bake_grouping": {
+     "mode": "duration-homogeneous",
+     "token_groups": {
+      "6": 8
+     }
+    },
+    "bake_campaign_scenarios": 8,
+    "bake_token_decisions_differing": 0,
+    "bake_worst_roots_m": 5.960464477539062e-07,
+    "bake_worst_rotations": 6.541609764099121e-06,
+    "bake_safety_ratio": 1.4401532077880626,
+    "bake_min_decision_margin": 0.0029878616333007812,
+    "bake_action_bit_identical": false
+   }
+  }
+ },
+ "passed": true
+}

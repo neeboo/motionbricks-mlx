@@ -1,0 +1,18 @@
+16 documents: 14 pass, 2 fail (structure + metrics 1-4, 6)
+  PASS  single-B16-s00-idle.json                     frames=24  idle              
+  PASS  single-B16-s01-idle.json                     frames=24  idle              
+  PASS  single-B16-s02-walk_zombie.json              frames=24  walk_zombie       
+  PASS  single-B16-s03-walk_zombie.json              frames=24  walk_zombie       
+  PASS  single-B16-s04-stealth_walk.json             frames=24  stealth_walk      
+  PASS  single-B16-s05-stealth_walk.json             frames=24  stealth_walk      
+  PASS  single-B16-s06-walk_stealth.json             frames=24  walk_stealth      
+  PASS  single-B16-s07-walk_stealth.json             frames=24  walk_stealth      
+  FAIL  single-B16-s08-walk_happy_dance.json         frames=24  walk_happy_dance  red=boundary_rotation_max_deg
+  FAIL  single-B16-s09-walk_happy_dance.json         frames=24  walk_happy_dance  red=jerk_p95_deg,boundary_rotation_max_deg
+  PASS  single-B16-s10-injured_walk.json             frames=24  injured_walk      
+  PASS  single-B16-s11-injured_walk.json             frames=24  injured_walk      
+  PASS  single-B16-s12-walk_gun.json                 frames=24  walk_gun          
+  PASS  single-B16-s13-walk_gun.json                 frames=24  walk_gun          
+  PASS  single-B16-s14-idle.json                     frames=24  idle              
+  PASS  single-B16-s15-walk_boxing.json              frames=24  walk_boxing       
+wrote artifacts/bake-2026-10-12/diverse/metrics-single-B16.json

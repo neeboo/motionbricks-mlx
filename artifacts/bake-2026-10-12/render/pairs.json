@@ -1,0 +1,19 @@
+{
+ "pairs": [
+  {
+   "label": "s00",
+   "style": "idle",
+   "document": "artifacts/bake-2026-10-12/render/render-s00.json"
+  },
+  {
+   "label": "s02",
+   "style": "walk_zombie",
+   "document": "artifacts/bake-2026-10-12/render/render-s02.json"
+  },
+  {
+   "label": "s04",
+   "style": "stealth_walk",
+   "document": "artifacts/bake-2026-10-12/render/render-s04.json"
+  }
+ ]
+}

@@ -1,0 +1,9 @@
+resolved bake switches: {'bake_root_batch': True, 'bake_decoder_batch': True, 'bake_decode_batch': True}
+load[before] [6.93, 9.19, 9.58]
+scenarios 16  stages ['decode', 'decoder', 'pose', 'root']
+  rows[0:8] styles=['walk'] seeds=[1, 2, 3, 4, 5, 6, 7, 8]
+  rows[8:16] styles=['walk'] seeds=[9, 10, 11, 12, 13, 14, 15, 16]
+load[after] [8.07, 9.37, 9.63]
+manifest artifacts/bake-2026-10-12/single-style/manifest.json  group B16: 12/12 fields present
+  tier=reproducible  ratio=0.4088803705478358  tokens differing=0/1408  worst roots=1.140e-06 m rotations=2.753e-05  bit_identical=False
+  timing serial p50 521.67 ms  single pass p50 133.47 ms  speedup 3.909x  119.9 scenarios/s

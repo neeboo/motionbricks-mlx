@@ -1,0 +1,20 @@
+label style             seed  fr  tok  uni  dur  roots    rot  worst_roots_m    worst_rot  angle_deg
+  s00 idle                 5  24  yes  yes  yes     NO     NO      1.582e-07    3.546e-06     0.0526
+  s01 idle                 9  24  yes  yes  yes     NO     NO      1.483e-07    2.325e-06     0.0474
+  s02 walk_zombie          6  24  yes  yes  yes     NO     NO      4.023e-07    3.342e-06     0.0454
+  s03 walk_zombie          8  24  yes  yes  yes     NO     NO      3.800e-07    6.512e-06     0.0476
+  s04 stealth_walk         1  24  yes  yes  yes     NO     NO      3.213e-07    4.325e-06     0.0479
+  s05 stealth_walk         3  24  yes  yes  yes     NO     NO      5.364e-07    4.590e-06     0.0473
+  s06 walk_stealth         7  24  yes  yes  yes     NO     NO      7.153e-07    3.010e-06     0.0539
+  s07 walk_stealth        13  24  yes  yes  yes     NO     NO      4.768e-07    2.891e-06     0.0443
+  s08 walk_happy_dance    10  24  yes  yes  yes     NO     NO      9.537e-07    1.365e-05     0.0458
+  s09 walk_happy_dance    14  24  yes  yes  yes     NO     NO      4.470e-07    5.335e-06     0.0451
+  s10 injured_walk         2  24  yes  yes  yes     NO     NO      3.576e-07    3.308e-06     0.0471
+  s11 injured_walk         6  24  yes  yes  yes     NO     NO      5.364e-07    2.995e-06     0.0456
+  s12 walk_gun             4  24  yes  yes  yes     NO     NO      1.073e-06    9.000e-06     0.0498
+  s13 walk_gun            12  24  yes  yes  yes     NO     NO      4.768e-07    2.921e-06     0.0497
+  s14 idle                17  24  yes  yes  yes     NO     NO      1.788e-07    4.306e-06     0.0448
+  s15 walk_boxing          2  24  yes  yes  yes     NO     NO      4.172e-07    4.083e-06     0.0413
+identity: tokens 16/16  uniforms 16/16  duration 16/16  roots 0/16  rotations 0/16
+0/768 token decisions differ; worst roots 1.073e-06 m, rotations 1.365e-05, angle 0.0539 deg, world 7.475e-06 m
+wrote artifacts/bake-2026-10-12/diverse/compare-B16.json

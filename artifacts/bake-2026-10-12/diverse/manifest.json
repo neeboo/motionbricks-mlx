@@ -1,0 +1,1210 @@
+{
+ "schema": "motionbricks_mlx.bake.library/1",
+ "created_local": "2026-10-12T23:21:23+0800",
+ "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+ "styles_dir": "/Users/ghostcorn/dev/motion-bricks-cpp/repo/generated/styles",
+ "device": "gpu",
+ "python": "3.13.12",
+ "release_stage_flag": "all+decode",
+ "release_switches": [
+  "bake_root_batch=1",
+  "bake_decoder_batch=1",
+  "bake_decode_batch=1"
+ ],
+ "campaign_name": "diverse",
+ "campaign_definition": [
+  {
+   "label": "s00",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 5
+  },
+  {
+   "label": "s01",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 9
+  },
+  {
+   "label": "s02",
+   "style": "walk_zombie",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 6
+  },
+  {
+   "label": "s03",
+   "style": "walk_zombie",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 8
+  },
+  {
+   "label": "s04",
+   "style": "stealth_walk",
+   "movement": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "seed": 1
+  },
+  {
+   "label": "s05",
+   "style": "stealth_walk",
+   "movement": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "seed": 3
+  },
+  {
+   "label": "s06",
+   "style": "walk_stealth",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 7
+  },
+  {
+   "label": "s07",
+   "style": "walk_stealth",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 13
+  },
+  {
+   "label": "s08",
+   "style": "walk_happy_dance",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 10
+  },
+  {
+   "label": "s09",
+   "style": "walk_happy_dance",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 14
+  },
+  {
+   "label": "s10",
+   "style": "injured_walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 2
+  },
+  {
+   "label": "s11",
+   "style": "injured_walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 6
+  },
+  {
+   "label": "s12",
+   "style": "walk_gun",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 4
+  },
+  {
+   "label": "s13",
+   "style": "walk_gun",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 12
+  },
+  {
+   "label": "s14",
+   "style": "idle",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 17
+  },
+  {
+   "label": "s15",
+   "style": "walk_boxing",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 2
+  }
+ ],
+ "groups": {
+  "B8": {
+   "batch_size": 8,
+   "bake_tier": "draft",
+   "bake_stages": [
+    "decode",
+    "decoder",
+    "pose",
+    "root"
+   ],
+   "bake_stage_switches": [
+    "bake_root_batch",
+    "bake_decoder_batch",
+    "bake_decode_batch"
+   ],
+   "bake_grouping": {
+    "mode": "duration-homogeneous",
+    "token_groups": {
+     "6": 8
+    }
+   },
+   "bake_campaign_scenarios": 8,
+   "bake_token_decisions_differing": 0,
+   "bake_worst_roots_m": 5.960464477539062e-07,
+   "bake_worst_rotations": 6.541609764099121e-06,
+   "bake_safety_ratio": 1.4401532077880626,
+   "bake_min_decision_margin": 0.0029878616333007812,
+   "bake_action_bit_identical": false,
+   "manifest_check": {
+    "required_fields": [
+     "batch_size",
+     "bake_tier",
+     "bake_stages",
+     "bake_stage_switches",
+     "bake_grouping",
+     "bake_campaign_scenarios",
+     "bake_token_decisions_differing",
+     "bake_worst_roots_m",
+     "bake_worst_rotations",
+     "bake_safety_ratio",
+     "bake_min_decision_margin",
+     "bake_action_bit_identical"
+    ],
+    "present_fields": [
+     "batch_size",
+     "bake_tier",
+     "bake_stages",
+     "bake_stage_switches",
+     "bake_grouping",
+     "bake_campaign_scenarios",
+     "bake_token_decisions_differing",
+     "bake_worst_roots_m",
+     "bake_worst_rotations",
+     "bake_safety_ratio",
+     "bake_min_decision_margin",
+     "bake_action_bit_identical"
+    ],
+    "missing_fields": [],
+    "complete": true,
+    "release_ratio_threshold": 0.7,
+    "grouped_above_b": 8
+   },
+   "grouping_declared": "duration-homogeneous",
+   "grouping_observed": "duration-homogeneous",
+   "token_groups": {
+    "6": 8
+   },
+   "timing": {
+    "repeats": 5,
+    "serial_ms_p50": 249.36587503179908,
+    "single_pass_ms_p50": 67.6057911477983,
+    "speedup": 3.6885283168514493,
+    "single_pass_ms_per_scenario": 8.450723893474787,
+    "throughput_per_s": 118.3330579256232,
+    "serial_times_ms": [
+     242.14337510056794,
+     249.36587503179908,
+     250.03312481567264,
+     227.6401249691844,
+     269.72133410163224
+    ],
+    "single_pass_times_ms": [
+     73.25591589324176,
+     67.6057911477983,
+     57.22225015051663,
+     59.643249958753586,
+     69.66620800085366
+    ]
+   },
+   "reference_single_scenario_ms_p50": 22.770750103518367,
+   "reference_single_scenario_ms": [
+    4077.804584056139,
+    32.65441721305251,
+    18.979875138029456,
+    19.269749987870455,
+    20.687707932665944,
+    22.51229202374816,
+    23.029208183288574,
+    24.165166076272726
+   ],
+   "perturbations": {
+    "duration_logits": 7.62939453125e-06,
+    "root_values": 3.337860107421875e-06,
+    "pose_logits": 0.004302978515625,
+    "decoded": 0.0004703998565673828
+   },
+   "margins": {
+    "pose_margin": 0.0029878616333007812,
+    "duration_margin": 0.14243173599243164
+   },
+   "safety": {
+    "pose_perturbation": 0.004302978515625,
+    "pose_margin": 0.0029878616333007812,
+    "pose_ratio": 1.4401532077880626,
+    "duration_perturbation": 7.62939453125e-06,
+    "duration_margin": 0.14243173599243164,
+    "duration_ratio": 5.3565270956575305e-05
+   },
+   "safety_detail": {
+    "note": "attribution only; the recorded tier is the global max/min rule of 0008",
+    "scenarios": [
+     {
+      "label": "s00",
+      "style": "idle",
+      "seed": 5,
+      "pose_perturbation": 0.004302978515625,
+      "pose_margin": 0.164764404296875,
+      "pose_ratio": 0.026115947397666234,
+      "duration_perturbation": 1.0728836059570312e-06,
+      "duration_margin": 0.8358128070831299,
+      "duration_ratio": 1.2836410220863275e-06
+     },
+     {
+      "label": "s01",
+      "style": "idle",
+      "seed": 9,
+      "pose_perturbation": 0.001739501953125,
+      "pose_margin": 0.03605842590332031,
+      "pose_ratio": 0.04824120603015075,
+      "duration_perturbation": 7.152557373046875e-07,
+      "duration_margin": 0.6497106552124023,
+      "duration_ratio": 1.1008834957014168e-06
+     },
+     {
+      "label": "s02",
+      "style": "walk_zombie",
+      "seed": 6,
+      "pose_perturbation": 0.00043010711669921875,
+      "pose_margin": 0.0029878616333007812,
+      "pose_ratio": 0.14395148420044684,
+      "duration_perturbation": 7.62939453125e-06,
+      "duration_margin": 1.4258201122283936,
+      "duration_ratio": 5.350881549374507e-06
+     },
+     {
+      "label": "s03",
+      "style": "walk_zombie",
+      "seed": 8,
+      "pose_perturbation": 0.0014438629150390625,
+      "pose_margin": 0.025432586669921875,
+      "pose_ratio": 0.056772161391930406,
+      "duration_perturbation": 2.9802322387695312e-06,
+      "duration_margin": 0.9350669682025909,
+      "duration_ratio": 3.1871858809195324e-06
+     },
+     {
+      "label": "s04",
+      "style": "stealth_walk",
+      "seed": 1,
+      "pose_perturbation": 0.0004303455352783203,
+      "pose_margin": 0.012001514434814453,
+      "pose_ratio": 0.035857602606380864,
+      "duration_perturbation": 1.9073486328125e-06,
+      "duration_margin": 0.14243173599243164,
+      "duration_ratio": 1.3391317739143826e-05
+     },
+     {
+      "label": "s05",
+      "style": "stealth_walk",
+      "seed": 3,
+      "pose_perturbation": 0.0002956390380859375,
+      "pose_margin": 0.04216575622558594,
+      "pose_ratio": 0.0070113538698149905,
+      "duration_perturbation": 6.67572021484375e-06,
+      "duration_margin": 0.5147395133972168,
+      "duration_ratio": 1.2969123296528814e-05
+     },
+     {
+      "label": "s06",
+      "style": "walk_stealth",
+      "seed": 7,
+      "pose_perturbation": 0.000209808349609375,
+      "pose_margin": 0.02425384521484375,
+      "pose_ratio": 0.00865051903114187,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 1.4042325019836426,
+      "duration_ratio": 2.7165709811133796e-06
+     },
+     {
+      "label": "s07",
+      "style": "walk_stealth",
+      "seed": 13,
+      "pose_perturbation": 0.000240325927734375,
+      "pose_margin": 0.018819808959960938,
+      "pose_ratio": 0.012769838856795378,
+      "duration_perturbation": 1.9073486328125e-06,
+      "duration_margin": 2.1843767166137695,
+      "duration_ratio": 8.731775148058162e-07
+     }
+    ],
+    "max_pose_perturbation": {
+     "label": "s00",
+     "style": "idle",
+     "value": 0.004302978515625
+    },
+    "min_pose_margin": {
+     "label": "s02",
+     "style": "walk_zombie",
+     "value": 0.0029878616333007812
+    },
+    "same_scenario": false
+   },
+   "suspensions": 0,
+   "campaign": {
+    "name": "diverse",
+    "scenarios": [
+     {
+      "label": "s00",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 5
+     },
+     {
+      "label": "s01",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 9
+     },
+     {
+      "label": "s02",
+      "style": "walk_zombie",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 6
+     },
+     {
+      "label": "s03",
+      "style": "walk_zombie",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 8
+     },
+     {
+      "label": "s04",
+      "style": "stealth_walk",
+      "movement": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "seed": 1
+     },
+     {
+      "label": "s05",
+      "style": "stealth_walk",
+      "movement": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "seed": 3
+     },
+     {
+      "label": "s06",
+      "style": "walk_stealth",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 7
+     },
+     {
+      "label": "s07",
+      "style": "walk_stealth",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 13
+     }
+    ]
+   },
+   "products": [
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B8/batch-B8-s00-idle.json",
+     "label": "s00",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172349,
+     "sha256": "7d63bcabcf5c74e08dfdb52fb3e74e621734faec3556df986c4f0d466c72f6cd"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B8/batch-B8-s01-idle.json",
+     "label": "s01",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172293,
+     "sha256": "d510eaeba92e852298f2950d8de17bf03518b5659c282f26fd39f47e8412a5a2"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B8/batch-B8-s02-walk_zombie.json",
+     "label": "s02",
+     "style": "walk_zombie",
+     "frames": 24,
+     "bytes": 170765,
+     "sha256": "d22f6f96fc7bdbe09eb71e4976b8a2c77856f975d5022127ea358c7255f8b39f"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B8/batch-B8-s03-walk_zombie.json",
+     "label": "s03",
+     "style": "walk_zombie",
+     "frames": 24,
+     "bytes": 170541,
+     "sha256": "596d2e0398378b9ea87e07b2640e39a284be1e4508640be13dc4ac766e7fce78"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B8/batch-B8-s04-stealth_walk.json",
+     "label": "s04",
+     "style": "stealth_walk",
+     "frames": 24,
+     "bytes": 171207,
+     "sha256": "04af858018535cbf3551dee289f4f3abc54e7f70b7b95f9bd3b367e0bc7ff90c"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B8/batch-B8-s05-stealth_walk.json",
+     "label": "s05",
+     "style": "stealth_walk",
+     "frames": 24,
+     "bytes": 171145,
+     "sha256": "2a26fa05261ccf1dd31c631e2585b14ec4e0af9d4801d48937dd141d9fe1624d"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B8/batch-B8-s06-walk_stealth.json",
+     "label": "s06",
+     "style": "walk_stealth",
+     "frames": 24,
+     "bytes": 169901,
+     "sha256": "a49ac31392966f8f8fd1236c1a9e93038951bf19d203657e3d8db9ccf0c43045"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B8/batch-B8-s07-walk_stealth.json",
+     "label": "s07",
+     "style": "walk_stealth",
+     "frames": 24,
+     "bytes": 170304,
+     "sha256": "040b0a359539f9886df9c1ed4a7e9d698b41469873eb88cc723eb349569a70d4"
+    }
+   ],
+   "device": "gpu",
+   "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+   "release_stage_flag": "all+decode",
+   "resolved_switches": {
+    "bake_root_batch": true,
+    "bake_decoder_batch": true,
+    "bake_decode_batch": true
+   },
+   "elapsed_seconds": 7.54,
+   "load_before": [
+    6.88,
+    9.3,
+    9.62
+   ],
+   "load_after": [
+    6.92,
+    9.23,
+    9.59
+   ]
+  },
+  "B16": {
+   "batch_size": 16,
+   "bake_tier": "draft",
+   "bake_stages": [
+    "decode",
+    "decoder",
+    "pose",
+    "root"
+   ],
+   "bake_stage_switches": [
+    "bake_root_batch",
+    "bake_decoder_batch",
+    "bake_decode_batch"
+   ],
+   "bake_grouping": {
+    "mode": "duration-homogeneous",
+    "token_groups": {
+     "6": 16
+    }
+   },
+   "bake_campaign_scenarios": 16,
+   "bake_token_decisions_differing": 0,
+   "bake_worst_roots_m": 1.0728836059570312e-06,
+   "bake_worst_rotations": 1.3649463653564453e-05,
+   "bake_safety_ratio": 1.2716246409192467,
+   "bake_min_decision_margin": 0.0029878616333007812,
+   "bake_action_bit_identical": false,
+   "manifest_check": {
+    "required_fields": [
+     "batch_size",
+     "bake_tier",
+     "bake_stages",
+     "bake_stage_switches",
+     "bake_grouping",
+     "bake_campaign_scenarios",
+     "bake_token_decisions_differing",
+     "bake_worst_roots_m",
+     "bake_worst_rotations",
+     "bake_safety_ratio",
+     "bake_min_decision_margin",
+     "bake_action_bit_identical"
+    ],
+    "present_fields": [
+     "batch_size",
+     "bake_tier",
+     "bake_stages",
+     "bake_stage_switches",
+     "bake_grouping",
+     "bake_campaign_scenarios",
+     "bake_token_decisions_differing",
+     "bake_worst_roots_m",
+     "bake_worst_rotations",
+     "bake_safety_ratio",
+     "bake_min_decision_margin",
+     "bake_action_bit_identical"
+    ],
+    "missing_fields": [],
+    "complete": true,
+    "release_ratio_threshold": 0.7,
+    "grouped_above_b": 8
+   },
+   "grouping_declared": "duration-homogeneous",
+   "grouping_observed": "duration-homogeneous",
+   "token_groups": {
+    "6": 16
+   },
+   "timing": {
+    "repeats": 5,
+    "serial_ms_p50": 505.119499983266,
+    "single_pass_ms_p50": 102.38241613842547,
+    "speedup": 4.933654811391856,
+    "single_pass_ms_per_scenario": 6.398901008651592,
+    "throughput_per_s": 156.27683545158092,
+    "serial_times_ms": [
+     505.119499983266,
+     517.9595828521997,
+     493.7131251208484,
+     497.8209170512855,
+     518.4455830603838
+    ],
+    "single_pass_times_ms": [
+     106.8997080437839,
+     102.38241613842547,
+     99.56037485972047,
+     103.41950017027557,
+     95.78095795586705
+    ]
+   },
+   "reference_single_scenario_ms_p50": 26.268208399415016,
+   "reference_single_scenario_ms": [
+    91.21245914138854,
+    26.001957943663,
+    26.19287488050759,
+    26.47191588766873,
+    33.41654106043279,
+    23.34095793776214,
+    22.54491695202887,
+    22.714291932061315,
+    24.214708944782615,
+    23.909958079457283,
+    26.343541918322444,
+    25.787916965782642,
+    28.052333975210786,
+    28.474291786551476,
+    33.91470806673169,
+    38.850167067721486
+   ],
+   "perturbations": {
+    "duration_logits": 1.52587890625e-05,
+    "root_values": 3.5762786865234375e-06,
+    "pose_logits": 0.0037994384765625,
+    "decoded": 0.0006040334701538086
+   },
+   "margins": {
+    "pose_margin": 0.0029878616333007812,
+    "duration_margin": 0.14243173599243164
+   },
+   "safety": {
+    "pose_perturbation": 0.0037994384765625,
+    "pose_margin": 0.0029878616333007812,
+    "pose_ratio": 1.2716246409192467,
+    "duration_perturbation": 1.52587890625e-05,
+    "duration_margin": 0.14243173599243164,
+    "duration_ratio": 0.00010713054191315061
+   },
+   "safety_detail": {
+    "note": "attribution only; the recorded tier is the global max/min rule of 0008",
+    "scenarios": [
+     {
+      "label": "s00",
+      "style": "idle",
+      "seed": 5,
+      "pose_perturbation": 0.00144195556640625,
+      "pose_margin": 0.164764404296875,
+      "pose_ratio": 0.008751620670494537,
+      "duration_perturbation": 1.0728836059570312e-06,
+      "duration_margin": 0.8358128070831299,
+      "duration_ratio": 1.2836410220863275e-06
+     },
+     {
+      "label": "s01",
+      "style": "idle",
+      "seed": 9,
+      "pose_perturbation": 0.0037994384765625,
+      "pose_margin": 0.03605842590332031,
+      "pose_ratio": 0.10536895001322401,
+      "duration_perturbation": 7.152557373046875e-07,
+      "duration_margin": 0.6497106552124023,
+      "duration_ratio": 1.1008834957014168e-06
+     },
+     {
+      "label": "s02",
+      "style": "walk_zombie",
+      "seed": 6,
+      "pose_perturbation": 0.000423431396484375,
+      "pose_margin": 0.0029878616333007812,
+      "pose_ratio": 0.14171720395786785,
+      "duration_perturbation": 7.62939453125e-06,
+      "duration_margin": 1.4258201122283936,
+      "duration_ratio": 5.350881549374507e-06
+     },
+     {
+      "label": "s03",
+      "style": "walk_zombie",
+      "seed": 8,
+      "pose_perturbation": 0.00127410888671875,
+      "pose_margin": 0.025432586669921875,
+      "pose_ratio": 0.05009749512524374,
+      "duration_perturbation": 2.9802322387695312e-06,
+      "duration_margin": 0.9350669682025909,
+      "duration_ratio": 3.1871858809195324e-06
+     },
+     {
+      "label": "s04",
+      "style": "stealth_walk",
+      "seed": 1,
+      "pose_perturbation": 0.000244140625,
+      "pose_margin": 0.012001514434814453,
+      "pose_ratio": 0.020342484802733523,
+      "duration_perturbation": 1.9073486328125e-06,
+      "duration_margin": 0.14243173599243164,
+      "duration_ratio": 1.3391317739143826e-05
+     },
+     {
+      "label": "s05",
+      "style": "stealth_walk",
+      "seed": 3,
+      "pose_perturbation": 0.00046318769454956055,
+      "pose_margin": 0.04216575622558594,
+      "pose_ratio": 0.010984925589179897,
+      "duration_perturbation": 6.67572021484375e-06,
+      "duration_margin": 0.5147395133972168,
+      "duration_ratio": 1.2969123296528814e-05
+     },
+     {
+      "label": "s06",
+      "style": "walk_stealth",
+      "seed": 7,
+      "pose_perturbation": 0.0003337860107421875,
+      "pose_margin": 0.02425384521484375,
+      "pose_ratio": 0.0137621893677257,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 1.4042325019836426,
+      "duration_ratio": 2.7165709811133796e-06
+     },
+     {
+      "label": "s07",
+      "style": "walk_stealth",
+      "seed": 13,
+      "pose_perturbation": 0.00022125244140625,
+      "pose_margin": 0.018819808959960938,
+      "pose_ratio": 0.011756359582446538,
+      "duration_perturbation": 1.9073486328125e-06,
+      "duration_margin": 2.1843767166137695,
+      "duration_ratio": 8.731775148058162e-07
+     },
+     {
+      "label": "s08",
+      "style": "walk_happy_dance",
+      "seed": 10,
+      "pose_perturbation": 0.0002613067626953125,
+      "pose_margin": 0.047849178314208984,
+      "pose_ratio": 0.0054610501559588225,
+      "duration_perturbation": 1.52587890625e-05,
+      "duration_margin": 0.5765442848205566,
+      "duration_ratio": 2.6465944532342623e-05
+     },
+     {
+      "label": "s09",
+      "style": "walk_happy_dance",
+      "seed": 14,
+      "pose_perturbation": 0.000133514404296875,
+      "pose_margin": 0.00768280029296875,
+      "pose_ratio": 0.01737835153922542,
+      "duration_perturbation": 6.67572021484375e-06,
+      "duration_margin": 2.7471158504486084,
+      "duration_ratio": 2.4300832503127214e-06
+     },
+     {
+      "label": "s10",
+      "style": "injured_walk",
+      "seed": 2,
+      "pose_perturbation": 0.000148773193359375,
+      "pose_margin": 0.012305021286010742,
+      "pose_ratio": 0.012090445835190172,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 2.0082685947418213,
+      "duration_ratio": 1.8994955533402689e-06
+     },
+     {
+      "label": "s11",
+      "style": "injured_walk",
+      "seed": 6,
+      "pose_perturbation": 0.000148773193359375,
+      "pose_margin": 0.006211757659912109,
+      "pose_ratio": 0.02395025715820987,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 2.0082685947418213,
+      "duration_ratio": 1.8994955533402689e-06
+     },
+     {
+      "label": "s12",
+      "style": "walk_gun",
+      "seed": 4,
+      "pose_perturbation": 0.00057220458984375,
+      "pose_margin": 0.06827926635742188,
+      "pose_ratio": 0.008380356444494105,
+      "duration_perturbation": 7.62939453125e-06,
+      "duration_margin": 3.733637809753418,
+      "duration_ratio": 2.0434211672379307e-06
+     },
+     {
+      "label": "s13",
+      "style": "walk_gun",
+      "seed": 12,
+      "pose_perturbation": 0.00054168701171875,
+      "pose_margin": 0.09749889373779297,
+      "pose_ratio": 0.0055558272607228445,
+      "duration_perturbation": 1.52587890625e-05,
+      "duration_margin": 2.7585859298706055,
+      "duration_ratio": 5.531380732887204e-06
+     },
+     {
+      "label": "s14",
+      "style": "idle",
+      "seed": 17,
+      "pose_perturbation": 0.0018463134765625,
+      "pose_margin": 0.4741935729980469,
+      "pose_ratio": 0.003893586041011367,
+      "duration_perturbation": 9.5367431640625e-07,
+      "duration_margin": 0.435335636138916,
+      "duration_ratio": 2.1906644833043983e-06
+     },
+     {
+      "label": "s15",
+      "style": "walk_boxing",
+      "seed": 2,
+      "pose_perturbation": 0.000217437744140625,
+      "pose_margin": 0.09792709350585938,
+      "pose_ratio": 0.002220404347317985,
+      "duration_perturbation": 2.5033950805664062e-06,
+      "duration_margin": 0.3783262372016907,
+      "duration_ratio": 6.617027407569974e-06
+     }
+    ],
+    "max_pose_perturbation": {
+     "label": "s01",
+     "style": "idle",
+     "value": 0.0037994384765625
+    },
+    "min_pose_margin": {
+     "label": "s02",
+     "style": "walk_zombie",
+     "value": 0.0029878616333007812
+    },
+    "same_scenario": false
+   },
+   "suspensions": 0,
+   "campaign": {
+    "name": "diverse",
+    "scenarios": [
+     {
+      "label": "s00",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 5
+     },
+     {
+      "label": "s01",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 9
+     },
+     {
+      "label": "s02",
+      "style": "walk_zombie",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 6
+     },
+     {
+      "label": "s03",
+      "style": "walk_zombie",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 8
+     },
+     {
+      "label": "s04",
+      "style": "stealth_walk",
+      "movement": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "seed": 1
+     },
+     {
+      "label": "s05",
+      "style": "stealth_walk",
+      "movement": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "seed": 3
+     },
+     {
+      "label": "s06",
+      "style": "walk_stealth",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 7
+     },
+     {
+      "label": "s07",
+      "style": "walk_stealth",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 13
+     },
+     {
+      "label": "s08",
+      "style": "walk_happy_dance",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 10
+     },
+     {
+      "label": "s09",
+      "style": "walk_happy_dance",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 14
+     },
+     {
+      "label": "s10",
+      "style": "injured_walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 2
+     },
+     {
+      "label": "s11",
+      "style": "injured_walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 6
+     },
+     {
+      "label": "s12",
+      "style": "walk_gun",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 4
+     },
+     {
+      "label": "s13",
+      "style": "walk_gun",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 12
+     },
+     {
+      "label": "s14",
+      "style": "idle",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 17
+     },
+     {
+      "label": "s15",
+      "style": "walk_boxing",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 2
+     }
+    ]
+   },
+   "products": [
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s00-idle.json",
+     "label": "s00",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172280,
+     "sha256": "8c48de8335f80397ba09c845080170b7e006a139b83a013c14d518495eab01ff"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s01-idle.json",
+     "label": "s01",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172348,
+     "sha256": "b9bba15a320dbabdbffb63902abfa9adf34fdb7e6e89137a2d5a4e0e5ed6ba3d"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s02-walk_zombie.json",
+     "label": "s02",
+     "style": "walk_zombie",
+     "frames": 24,
+     "bytes": 170654,
+     "sha256": "35dfde16e6fea89813b0f77856f293fd56d98c392373e3622589b18313ebe2c0"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s03-walk_zombie.json",
+     "label": "s03",
+     "style": "walk_zombie",
+     "frames": 24,
+     "bytes": 170484,
+     "sha256": "a249bb95be81f1ad520cc20b3e89412fe767afbdd4c05c718a903f026e5b5ebd"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s04-stealth_walk.json",
+     "label": "s04",
+     "style": "stealth_walk",
+     "frames": 24,
+     "bytes": 171185,
+     "sha256": "70eb19ad68f741878dcc3034ccd922c5503331116a1c8b07f81b1917ec2997ca"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s05-stealth_walk.json",
+     "label": "s05",
+     "style": "stealth_walk",
+     "frames": 24,
+     "bytes": 171142,
+     "sha256": "4a1f2a0f585ef0022b547f5888f742e7485e86297a6b90a264d281ad2a80961e"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s06-walk_stealth.json",
+     "label": "s06",
+     "style": "walk_stealth",
+     "frames": 24,
+     "bytes": 169972,
+     "sha256": "bd0944fffc9b63bed3bd9a24d875eb7b48ba5baad129864e3b1fd632cecf6b4b"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s07-walk_stealth.json",
+     "label": "s07",
+     "style": "walk_stealth",
+     "frames": 24,
+     "bytes": 170224,
+     "sha256": "92d6c5aab06157c72526ec92ba53bbe5c5de16ca14c2b4562474c3a48f285877"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s08-walk_happy_dance.json",
+     "label": "s08",
+     "style": "walk_happy_dance",
+     "frames": 24,
+     "bytes": 170401,
+     "sha256": "71a30c98993a6a9aaf02a778caba29c7201900eead8814022a7074314d6a40b8"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s09-walk_happy_dance.json",
+     "label": "s09",
+     "style": "walk_happy_dance",
+     "frames": 24,
+     "bytes": 170515,
+     "sha256": "559c9f005b8dbdd10aac3731a33dc5dd5fc68ebfd5c3f84c3725fa2ac9a2f32e"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s10-injured_walk.json",
+     "label": "s10",
+     "style": "injured_walk",
+     "frames": 24,
+     "bytes": 170307,
+     "sha256": "ad75c0eae8e02aafdc1621da2a64bff93ee0a55df6e7bd52fb8d960d8c6d28b4"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s11-injured_walk.json",
+     "label": "s11",
+     "style": "injured_walk",
+     "frames": 24,
+     "bytes": 170415,
+     "sha256": "1452f001580f8f07165810a4f074f8af65ca9a9dbca7509e902e34275e9c8f39"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s12-walk_gun.json",
+     "label": "s12",
+     "style": "walk_gun",
+     "frames": 24,
+     "bytes": 170605,
+     "sha256": "eb7e0c4696b4d45ec0b072dae8d58390ad22e3e683a95ebc89d40c69675fc11f"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s13-walk_gun.json",
+     "label": "s13",
+     "style": "walk_gun",
+     "frames": 24,
+     "bytes": 170641,
+     "sha256": "8b6200c2f839d2af6ee5d1bf8e55b85d386ca072988570fd39908a5b3ceac4ea"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s14-idle.json",
+     "label": "s14",
+     "style": "idle",
+     "frames": 24,
+     "bytes": 172304,
+     "sha256": "52a5c0cc7494b8acc8bee8105cd754e5e85d201c53c2a414b3c1e5538df4733d"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/diverse/plans/batch-B16/batch-B16-s15-walk_boxing.json",
+     "label": "s15",
+     "style": "walk_boxing",
+     "frames": 24,
+     "bytes": 170245,
+     "sha256": "614cf8c0043a44b8816f989e07e598f12fcd6d740ccf2709765e9da5ac8745ff"
+    }
+   ],
+   "device": "gpu",
+   "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+   "release_stage_flag": "all+decode",
+   "resolved_switches": {
+    "bake_root_batch": true,
+    "bake_decoder_batch": true,
+    "bake_decode_batch": true
+   },
+   "elapsed_seconds": 0.78,
+   "load_before": [
+    6.92,
+    9.23,
+    9.59
+   ],
+   "load_after": [
+    6.93,
+    9.19,
+    9.58
+   ]
+  }
+ },
+ "load_after": [
+  6.93,
+  9.19,
+  9.58
+ ]
+}

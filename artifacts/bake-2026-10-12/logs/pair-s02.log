@@ -1,0 +1,4 @@
+artifacts/bake-2026-10-12/gifs/pairs/s02-batch-vs-single.gif  frames=24  1290x594  292,528 bytes
+  pixels compared 8,601,600  differing 0 (0.000000%)  max channel delta 0
+  sha256 left  c2e9a720620baf48bb12d09943d91c5904aebfae1cf81af19581ad35398abfcd
+  sha256 right c2e9a720620baf48bb12d09943d91c5904aebfae1cf81af19581ad35398abfcd

@@ -1,0 +1,825 @@
+{
+ "schema": "motionbricks_mlx.bake.library/1",
+ "created_local": "2026-10-12T23:21:59+0800",
+ "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+ "styles_dir": "/Users/ghostcorn/dev/motion-bricks-cpp/repo/generated/styles",
+ "device": "gpu",
+ "python": "3.13.12",
+ "release_stage_flag": "all+decode",
+ "release_switches": [
+  "bake_root_batch=1",
+  "bake_decoder_batch=1",
+  "bake_decode_batch=1"
+ ],
+ "campaign_name": "single-style",
+ "campaign_definition": [
+  {
+   "label": "w00",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 1
+  },
+  {
+   "label": "w01",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 2
+  },
+  {
+   "label": "w02",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 3
+  },
+  {
+   "label": "w03",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 4
+  },
+  {
+   "label": "w04",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 5
+  },
+  {
+   "label": "w05",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 6
+  },
+  {
+   "label": "w06",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 7
+  },
+  {
+   "label": "w07",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 8
+  },
+  {
+   "label": "w08",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 9
+  },
+  {
+   "label": "w09",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 10
+  },
+  {
+   "label": "w10",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 11
+  },
+  {
+   "label": "w11",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 12
+  },
+  {
+   "label": "w12",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 13
+  },
+  {
+   "label": "w13",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 14
+  },
+  {
+   "label": "w14",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 15
+  },
+  {
+   "label": "w15",
+   "style": "walk",
+   "movement": [
+    0.2,
+    0.0,
+    0.0
+   ],
+   "seed": 16
+  }
+ ],
+ "groups": {
+  "B16": {
+   "batch_size": 16,
+   "bake_tier": "reproducible",
+   "bake_stages": [
+    "decode",
+    "decoder",
+    "pose",
+    "root"
+   ],
+   "bake_stage_switches": [
+    "bake_root_batch",
+    "bake_decoder_batch",
+    "bake_decode_batch"
+   ],
+   "bake_grouping": {
+    "mode": "duration-homogeneous",
+    "token_groups": {
+     "11": 16
+    }
+   },
+   "bake_campaign_scenarios": 16,
+   "bake_token_decisions_differing": 0,
+   "bake_worst_roots_m": 1.1399388313293457e-06,
+   "bake_worst_rotations": 2.7533620595932007e-05,
+   "bake_safety_ratio": 0.4088803705478358,
+   "bake_min_decision_margin": 0.0029854774475097656,
+   "bake_action_bit_identical": false,
+   "manifest_check": {
+    "required_fields": [
+     "batch_size",
+     "bake_tier",
+     "bake_stages",
+     "bake_stage_switches",
+     "bake_grouping",
+     "bake_campaign_scenarios",
+     "bake_token_decisions_differing",
+     "bake_worst_roots_m",
+     "bake_worst_rotations",
+     "bake_safety_ratio",
+     "bake_min_decision_margin",
+     "bake_action_bit_identical"
+    ],
+    "present_fields": [
+     "batch_size",
+     "bake_tier",
+     "bake_stages",
+     "bake_stage_switches",
+     "bake_grouping",
+     "bake_campaign_scenarios",
+     "bake_token_decisions_differing",
+     "bake_worst_roots_m",
+     "bake_worst_rotations",
+     "bake_safety_ratio",
+     "bake_min_decision_margin",
+     "bake_action_bit_identical"
+    ],
+    "missing_fields": [],
+    "complete": true,
+    "release_ratio_threshold": 0.7,
+    "grouped_above_b": 8
+   },
+   "grouping_declared": "duration-homogeneous",
+   "grouping_observed": "duration-homogeneous",
+   "token_groups": {
+    "11": 16
+   },
+   "timing": {
+    "repeats": 9,
+    "serial_ms_p50": 505.47058298252523,
+    "single_pass_ms_p50": 112.3197078704834,
+    "speedup": 4.500283989034113,
+    "single_pass_ms_per_scenario": 7.019981741905212,
+    "throughput_per_s": 142.45051294515213,
+    "serial_times_ms": [
+     578.0273750424385,
+     505.47058298252523,
+     499.27770905196667,
+     504.4823328498751,
+     528.5746669396758,
+     525.909666903317,
+     537.051249993965,
+     480.60583393089473,
+     500.2112500369549
+    ],
+    "single_pass_times_ms": [
+     107.38091683015227,
+     116.51987489312887,
+     122.9563329834491,
+     108.92520798370242,
+     112.3197078704834,
+     121.84454197995365,
+     111.55345803126693,
+     121.76924990490079,
+     107.82895796000957
+    ]
+   },
+   "reference_single_scenario_ms_p50": 28.683291980996728,
+   "reference_single_scenario_ms": [
+    90.939125046134,
+    50.53254100494087,
+    23.67600006982684,
+    27.335916878655553,
+    26.418666820973158,
+    26.12937497906387,
+    28.470874996855855,
+    28.8957089651376,
+    31.092290999367833,
+    30.083792051300406,
+    32.21112512983382,
+    33.04566699080169,
+    35.41912487708032,
+    25.906166061758995,
+    25.164415827021003,
+    26.489208918064833
+   ],
+   "perturbations": {
+    "duration_logits": 4.57763671875e-05,
+    "root_values": 1.430511474609375e-06,
+    "pose_logits": 0.001220703125,
+    "decoded": 0.0016687959432601929
+   },
+   "margins": {
+    "pose_margin": 0.0029854774475097656,
+    "duration_margin": 2.1710009574890137
+   },
+   "safety": {
+    "pose_perturbation": 0.001220703125,
+    "pose_margin": 0.0029854774475097656,
+    "pose_ratio": 0.4088803705478358,
+    "duration_perturbation": 4.57763671875e-05,
+    "duration_margin": 2.1710009574890137,
+    "duration_ratio": 2.108537402049103e-05
+   },
+   "safety_detail": {
+    "note": "attribution only; the recorded tier is the global max/min rule of 0008",
+    "scenarios": [
+     {
+      "label": "w00",
+      "style": "walk",
+      "seed": 1,
+      "pose_perturbation": 0.0011444091796875,
+      "pose_margin": 0.0029854774475097656,
+      "pose_ratio": 0.3833253473885961,
+      "duration_perturbation": 1.52587890625e-05,
+      "duration_margin": 2.1710009574890137,
+      "duration_ratio": 7.028458006830343e-06
+     },
+     {
+      "label": "w01",
+      "style": "walk",
+      "seed": 2,
+      "pose_perturbation": 0.0010986328125,
+      "pose_margin": 0.0037889480590820312,
+      "pose_ratio": 0.28995721117543416,
+      "duration_perturbation": 1.52587890625e-05,
+      "duration_margin": 2.18971586227417,
+      "duration_ratio": 6.968387691475506e-06
+     },
+     {
+      "label": "w02",
+      "style": "walk",
+      "seed": 3,
+      "pose_perturbation": 0.0007953643798828125,
+      "pose_margin": 0.02903461456298828,
+      "pose_ratio": 0.02739366069962227,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 2.2074074745178223,
+      "duration_ratio": 1.7281346147739524e-06
+     },
+     {
+      "label": "w03",
+      "style": "walk",
+      "seed": 4,
+      "pose_perturbation": 0.000850677490234375,
+      "pose_margin": 0.05317497253417969,
+      "pose_ratio": 0.015997704365292874,
+      "duration_perturbation": 1.33514404296875e-05,
+      "duration_margin": 2.244720935821533,
+      "duration_ratio": 5.947928856822943e-06
+     },
+     {
+      "label": "w04",
+      "style": "walk",
+      "seed": 5,
+      "pose_perturbation": 0.0006103515625,
+      "pose_margin": 0.058091163635253906,
+      "pose_ratio": 0.010506788370298623,
+      "duration_perturbation": 4.57763671875e-05,
+      "duration_margin": 2.221675395965576,
+      "duration_ratio": 2.0604435405202318e-05
+     },
+     {
+      "label": "w05",
+      "style": "walk",
+      "seed": 6,
+      "pose_perturbation": 0.00102996826171875,
+      "pose_margin": 0.0230865478515625,
+      "pose_ratio": 0.04461335095836087,
+      "duration_perturbation": 6.198883056640625e-06,
+      "duration_margin": 2.2322025299072266,
+      "duration_ratio": 2.7770253700493115e-06
+     },
+     {
+      "label": "w06",
+      "style": "walk",
+      "seed": 7,
+      "pose_perturbation": 0.00079345703125,
+      "pose_margin": 0.11597061157226562,
+      "pose_ratio": 0.006841880201309167,
+      "duration_perturbation": 7.62939453125e-06,
+      "duration_margin": 2.2360382080078125,
+      "duration_ratio": 3.4120143850526474e-06
+     },
+     {
+      "label": "w07",
+      "style": "walk",
+      "seed": 8,
+      "pose_perturbation": 0.0006561279296875,
+      "pose_margin": 0.15239620208740234,
+      "pose_ratio": 0.004305408669641237,
+      "duration_perturbation": 1.52587890625e-05,
+      "duration_margin": 2.23405122756958,
+      "duration_ratio": 6.830098107956104e-06
+     },
+     {
+      "label": "w08",
+      "style": "walk",
+      "seed": 9,
+      "pose_perturbation": 0.000782012939453125,
+      "pose_margin": 0.016369342803955078,
+      "pose_ratio": 0.047773019895714995,
+      "duration_perturbation": 2.288818359375e-05,
+      "duration_margin": 2.223470687866211,
+      "duration_ratio": 1.0293899406299352e-05
+     },
+     {
+      "label": "w09",
+      "style": "walk",
+      "seed": 10,
+      "pose_perturbation": 0.0009613037109375,
+      "pose_margin": 0.05623435974121094,
+      "pose_ratio": 0.01709459688634128,
+      "duration_perturbation": 3.814697265625e-06,
+      "duration_margin": 2.210400104522705,
+      "duration_ratio": 1.7257949173182442e-06
+     },
+     {
+      "label": "w10",
+      "style": "walk",
+      "seed": 11,
+      "pose_perturbation": 0.00081634521484375,
+      "pose_margin": 0.021770477294921875,
+      "pose_ratio": 0.03749780970737691,
+      "duration_perturbation": 4.57763671875e-05,
+      "duration_margin": 2.2343482971191406,
+      "duration_ratio": 2.048757002053879e-05
+     },
+     {
+      "label": "w11",
+      "style": "walk",
+      "seed": 12,
+      "pose_perturbation": 0.0009307861328125,
+      "pose_margin": 0.021050453186035156,
+      "pose_ratio": 0.044216916594934985,
+      "duration_perturbation": 1.52587890625e-05,
+      "duration_margin": 2.223083972930908,
+      "duration_ratio": 6.863793382659698e-06
+     },
+     {
+      "label": "w12",
+      "style": "walk",
+      "seed": 13,
+      "pose_perturbation": 0.000762939453125,
+      "pose_margin": 0.04463481903076172,
+      "pose_ratio": 0.017092921393927738,
+      "duration_perturbation": 3.0517578125e-05,
+      "duration_margin": 2.2098031044006348,
+      "duration_ratio": 1.3810089262806646e-05
+     },
+     {
+      "label": "w13",
+      "style": "walk",
+      "seed": 14,
+      "pose_perturbation": 0.001220703125,
+      "pose_margin": 0.0029954910278320312,
+      "pose_ratio": 0.4075135307226998,
+      "duration_perturbation": 3.337860107421875e-06,
+      "duration_margin": 2.1761488914489746,
+      "duration_ratio": 1.5338381121520515e-06
+     },
+     {
+      "label": "w14",
+      "style": "walk",
+      "seed": 15,
+      "pose_perturbation": 0.000762939453125,
+      "pose_margin": 0.09116172790527344,
+      "pose_ratio": 0.008369076263207448,
+      "duration_perturbation": 4.76837158203125e-06,
+      "duration_margin": 2.178131580352783,
+      "duration_ratio": 2.1892027208287094e-06
+     },
+     {
+      "label": "w15",
+      "style": "walk",
+      "seed": 16,
+      "pose_perturbation": 0.00072479248046875,
+      "pose_margin": 0.08973217010498047,
+      "pose_ratio": 0.008077286881848424,
+      "duration_perturbation": 5.7220458984375e-06,
+      "duration_margin": 2.185303211212158,
+      "duration_ratio": 2.6184219512785865e-06
+     }
+    ],
+    "max_pose_perturbation": {
+     "label": "w13",
+     "style": "walk",
+     "value": 0.001220703125
+    },
+    "min_pose_margin": {
+     "label": "w00",
+     "style": "walk",
+     "value": 0.0029854774475097656
+    },
+    "same_scenario": false
+   },
+   "suspensions": 0,
+   "campaign": {
+    "name": "single-style",
+    "scenarios": [
+     {
+      "label": "w00",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 1
+     },
+     {
+      "label": "w01",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 2
+     },
+     {
+      "label": "w02",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 3
+     },
+     {
+      "label": "w03",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 4
+     },
+     {
+      "label": "w04",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 5
+     },
+     {
+      "label": "w05",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 6
+     },
+     {
+      "label": "w06",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 7
+     },
+     {
+      "label": "w07",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 8
+     },
+     {
+      "label": "w08",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 9
+     },
+     {
+      "label": "w09",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 10
+     },
+     {
+      "label": "w10",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 11
+     },
+     {
+      "label": "w11",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 12
+     },
+     {
+      "label": "w12",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 13
+     },
+     {
+      "label": "w13",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 14
+     },
+     {
+      "label": "w14",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 15
+     },
+     {
+      "label": "w15",
+      "style": "walk",
+      "movement": [
+       0.2,
+       0.0,
+       0.0
+      ],
+      "seed": 16
+     }
+    ]
+   },
+   "products": [
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w00-walk.json",
+     "label": "w00",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297711,
+     "sha256": "74ba0cf6dda6dbbc67b3cfc98b2d6a769183cbc74f90b021e94d0773dfdff961"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w01-walk.json",
+     "label": "w01",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297720,
+     "sha256": "a5e01d764106ef0b7d04427d236350d922c30e310b2f6a6e0c4f49f7522dc4cd"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w02-walk.json",
+     "label": "w02",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297785,
+     "sha256": "c410999d127a77ec96412e033abb06252e3668119fafb6ec51b1afaba39da33b"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w03-walk.json",
+     "label": "w03",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297622,
+     "sha256": "dc1d00c95f81e775c2031dfb6aea717ef65c93b732b193fd1a450fd894a5234f"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w04-walk.json",
+     "label": "w04",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297709,
+     "sha256": "61403bd41b5a24964e0a2c5e349e3ffe3c28fe0feab3727dc471baf886924a56"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w05-walk.json",
+     "label": "w05",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297486,
+     "sha256": "7bb43e3d9834a1592f6d952b6d0392a2ef8708dd8e2ce5f0b62ebeed13bdb85b"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w06-walk.json",
+     "label": "w06",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297615,
+     "sha256": "b7b2fb4e18631562f516e5123d4cb184a9f5974aece72cc30e0a1ae9a59759e2"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w07-walk.json",
+     "label": "w07",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297533,
+     "sha256": "d674ba7c3577328b7b99f620d72b87efe1d9d86e6ad7d000162943ed21732d54"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w08-walk.json",
+     "label": "w08",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297631,
+     "sha256": "bcff9583e738f6ffbcdf46a9211b3c7e8663cbeda25759507dfde38644f1ce05"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w09-walk.json",
+     "label": "w09",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297546,
+     "sha256": "463ad2fb2e77304f3a735bbf62f4027a51c954f78f0d59fea78bb2621ae936dd"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w10-walk.json",
+     "label": "w10",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297653,
+     "sha256": "179365df206a2d9ae4c59175037356528e1fb5e4afdd58f362ecc435d140b645"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w11-walk.json",
+     "label": "w11",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297512,
+     "sha256": "c821160f96c0190ad16607e065c76aeade38131cdfa5f6161817e13a4d36700d"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w12-walk.json",
+     "label": "w12",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297719,
+     "sha256": "5e103f3e993d0dec3ef39d564d78141e21e0e6a04c072413ba21273ae47d1bfb"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w13-walk.json",
+     "label": "w13",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297471,
+     "sha256": "87e9e7c44a6ef0b4e1bd5f077d496b1fa1c9529c78f325c1ec99b1813ec02995"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w14-walk.json",
+     "label": "w14",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297683,
+     "sha256": "01046cceb057245c88c43d2c968b83cb3d30801880851ce236b4b377ca154c8e"
+    },
+    {
+     "file": "artifacts/bake-2026-10-12/single-style-r9/plans/batch-B16/batch-B16-w15-walk.json",
+     "label": "w15",
+     "style": "walk",
+     "frames": 44,
+     "bytes": 297810,
+     "sha256": "bfc663ef3cb83cbd5c9594e9da1f35395a7f161bf558bedd90903b1fb7101206"
+    }
+   ],
+   "device": "gpu",
+   "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+   "release_stage_flag": "all+decode",
+   "resolved_switches": {
+    "bake_root_batch": true,
+    "bake_decoder_batch": true,
+    "bake_decode_batch": true
+   },
+   "elapsed_seconds": 0.71,
+   "load_before": [
+    9.51,
+    9.6,
+    9.71
+   ],
+   "load_after": [
+    9.39,
+    9.57,
+    9.7
+   ]
+  }
+ },
+ "load_after": [
+  9.39,
+  9.57,
+  9.7
+ ]
+}

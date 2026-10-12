@@ -1,0 +1,137 @@
+[PASS] seed-1
+  PASS foot_slide_max_m             1.07269 <= 1.21
+  PASS jerk_p50_deg                 0.338795 >= 0.05
+  PASS jerk_p95_deg                 2.1659 <= 4
+  PASS jerk_max_deg                 14.0828 <= 30
+  PASS freeze_frac                  0.00136799 <= 0.15
+  PASS foot_height_min_m            -0.00807259 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0327168 <= 0.15
+  PASS boundary_rotation_max_deg    7.66873 <= 26
+[PASS] seed-7
+  PASS foot_slide_max_m             1.09679 <= 1.21
+  PASS jerk_p50_deg                 0.333491 >= 0.05
+  PASS jerk_p95_deg                 2.06824 <= 4
+  PASS jerk_max_deg                 12.0686 <= 30
+  PASS freeze_frac                  0.00410397 <= 0.15
+  PASS foot_height_min_m            -0.00850963 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0273536 <= 0.15
+  PASS boundary_rotation_max_deg    6.3609 <= 26
+[PASS] seed-13
+  PASS foot_slide_max_m             1.09809 <= 1.21
+  PASS jerk_p50_deg                 0.351374 >= 0.05
+  PASS jerk_p95_deg                 1.9382 <= 4
+  PASS jerk_max_deg                 12.2013 <= 30
+  PASS freeze_frac                  0.00136799 <= 0.15
+  PASS foot_height_min_m            -0.007886 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0258406 <= 0.15
+  PASS boundary_rotation_max_deg    7.7164 <= 26
+[PASS] seed-42
+  PASS foot_slide_max_m             1.10041 <= 1.21
+  PASS jerk_p50_deg                 0.375665 >= 0.05
+  PASS jerk_p95_deg                 2.01451 <= 4
+  PASS jerk_max_deg                 9.60076 <= 30
+  PASS freeze_frac                  0.00136799 <= 0.15
+  PASS foot_height_min_m            -0.00825471 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0243353 <= 0.15
+  PASS boundary_rotation_max_deg    8.59933 <= 26
+[PASS] seed-77
+  PASS foot_slide_max_m             1.08889 <= 1.21
+  PASS jerk_p50_deg                 0.35216 >= 0.05
+  PASS jerk_p95_deg                 1.98594 <= 4
+  PASS jerk_max_deg                 13.9781 <= 30
+  PASS freeze_frac                  0.00205198 <= 0.15
+  PASS foot_height_min_m            -0.00813458 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0248138 <= 0.15
+  PASS boundary_rotation_max_deg    7.20668 <= 26
+[PASS] seed-123
+  PASS foot_slide_max_m             1.08839 <= 1.21
+  PASS jerk_p50_deg                 0.332119 >= 0.05
+  PASS jerk_p95_deg                 2.14074 <= 4
+  PASS jerk_max_deg                 12.5448 <= 30
+  PASS freeze_frac                  0.00341997 <= 0.15
+  PASS foot_height_min_m            -0.00835321 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0267079 <= 0.15
+  PASS boundary_rotation_max_deg    7.5843 <= 26
+[PASS] mlx-session-initial
+  PASS foot_slide_max_m             0.0807431 <= 1.21
+  PASS jerk_p50_deg                 0.0862483 >= 0.05
+  PASS jerk_p95_deg                 0.730286 <= 4
+  PASS jerk_max_deg                 3.14311 <= 30
+  PASS freeze_frac                  0.0608755 <= 0.15
+  PASS foot_height_min_m            -0.0077075 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0195104 <= 0.15
+  PASS boundary_rotation_max_deg    4.96208 <= 26
+[PASS] mlx-replan-turned
+  PASS foot_slide_max_m             0.893175 <= 1.21
+  PASS jerk_p50_deg                 0.320837 >= 0.05
+  PASS jerk_p95_deg                 1.84383 <= 4
+  PASS jerk_max_deg                 17.1911 <= 30
+  PASS freeze_frac                  0 <= 0.15
+  PASS foot_height_min_m            -0.0191091 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0682048 <= 0.15
+  PASS boundary_rotation_max_deg    21.4582 <= 26
+[PASS] reference-session-initial
+  PASS foot_slide_max_m             0.0807426 <= 1.21
+  PASS jerk_p50_deg                 0.0865243 >= 0.05
+  PASS jerk_p95_deg                 0.738611 <= 4
+  PASS jerk_max_deg                 3.14285 <= 30
+  PASS freeze_frac                  0.0622435 <= 0.15
+  PASS foot_height_min_m            -0.00770754 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0195104 <= 0.15
+  PASS boundary_rotation_max_deg    4.96194 <= 26
+[PASS] reference-replan-turned
+  PASS foot_slide_max_m             0.893152 <= 1.21
+  PASS jerk_p50_deg                 0.319471 >= 0.05
+  PASS jerk_p95_deg                 1.84425 <= 4
+  PASS jerk_max_deg                 17.1925 <= 30
+  PASS freeze_frac                  0 <= 0.15
+  PASS foot_height_min_m            -0.0191089 >= -0.05
+  PASS ground_airborne_frac         0 <= 0.1
+  PASS boundary_root_max_m          0.0682051 <= 0.15
+  PASS boundary_rotation_max_deg    21.458 <= 26
+[PASS] cross-impl (2 same-seed pair(s) with reference data)
+  pair session-initial (seed 1)
+    PASS token_agreement_frac         1 >= 1
+    PASS deviation_roots_max_m        5.23519e-07 <= 0.001
+    PASS deviation_rotation_max_deg   0.0423849 <= 0.2
+    PASS deviation_world_max_m        1.87049e-06 <= 0.002
+  pair replan-turned (seed 77)
+    PASS token_agreement_frac         1 >= 1
+    PASS deviation_roots_max_m        3.99365e-06 <= 0.001
+    PASS deviation_rotation_max_deg   0.0465734 <= 0.2
+    PASS deviation_world_max_m        3.27011e-05 <= 0.002
+negative controls (each must trip its metric):
+  [PASS] shuffle_frames     RED on boundary_root_max_m, boundary_rotation_max_deg, foot_slide_max_m, jerk_max_deg, jerk_p95_deg
+        boundary_root_max_m          good 0.03272 -> bad 0.7376
+        boundary_rotation_max_deg    good 7.669 -> bad 42.49
+        foot_slide_max_m             good 1.073 -> bad 19.69
+        jerk_max_deg                 good 14.08 -> bad 73.21
+        jerk_p95_deg                 good 2.166 -> bad 31.43
+  [PASS] freeze_frames      RED on freeze_frac, jerk_max_deg, jerk_p95_deg
+        foot_slide_max_m             good 1.073 -> bad 1.037
+        freeze_frac                  good 0.001368 -> bad 0.3263
+        jerk_max_deg                 good 14.08 -> bad 63.56
+        jerk_p50_deg                 good 0.3388 -> bad 0.1067
+        jerk_p95_deg                 good 2.166 -> bad 4.539
+  [PASS] add_jitter_noise   RED on foot_height_min_m, foot_slide_max_m, jerk_max_deg, jerk_p95_deg
+        foot_height_min_m            good -0.008073 -> bad -0.05622
+        foot_slide_max_m             good 1.073 -> bad 4.802
+        jerk_max_deg                 good 14.08 -> bad 35.02
+        jerk_p95_deg                 good 2.166 -> bad 18.14
+  [PASS] raise_feet         RED on boundary_root_max_m, ground_airborne_frac
+        boundary_root_max_m          good 0.03272 -> bad 0.2537
+        ground_airborne_frac         good 0 -> bad 1
+  [PASS] translate_roots    RED on boundary_root_max_m
+        boundary_root_max_m          good 0.03272 -> bad 0.6754
+        boundary_rotation_max_deg    good 7.669 -> bad 7.669
+GATE PASS
+report: /Users/ghostcorn/dev/motionbrick-mlx/out/eval/gate-report.json
