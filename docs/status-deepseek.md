@@ -208,3 +208,75 @@ decision 0004 采用整组 f32 优化，我不从已裁定默认里偷偷摘开�
 
 **⑩ 默认路径 vs 最初验收基线**：GPU 单步 p50 **55.5 → 27.3 ms（2.03×）**，p90 67.3 → 38.7 ms，
 冷启动 385.3 → 336 ms，GPU 峰值内存不变（779 MB），token 与参考仍是 0 差，对齐最差余量仍是 0.26× 容差。
+
+---
+
+## 2026-10-12 · Round 3（A 侧：decision 0005 + 批量烘焙 + host 同步）
+
+**判据先写、事后不改**：`docs/optimization-report.md` 第 21 节在动代码前写死并单独提交
+（commit `cecf88a`）：正确性门＝`mlx_align` plan/trace OK ＋ N≥5 seed×6 步 `pose.tokens`/
+`sampling_uniforms` 逐位一致＋最终动作偏差必报；采用规则＝**token 一致 ＋ 对齐不回归 ＋ 配对 p50 ≥1.05×**
+才默认开；测量纪律＝记录 load、同进程交错配对、每项 ≥25 步。
+
+**① decision 0005 已实现（`models/nn.py`）**：`declared_default()` 让三个 `*_compile`
+按后端决定默认——Metal 开、非 Metal 关（`_BACKEND_CONDITIONAL`），环境变量仍可显式覆盖两端。
+验收：GPU 默认文档与改前**逐字节一致**（sha256 `ccda1952…`）；`mlx_align plan/trace` 两后端 OK 且
+`pose.tokens`/`sampling_uniforms` 均 `0.000e+00`；`--repeat 2` 两后端 deterministic；
+5 seed×6 步 token 一致；`pytest` **135 → 140 passed / 1 skipped**。
+
+**② 但 0005 的前提数字不成立，必须记在案**：CPU-only 进程里默认路径的 MLX 峰值是
+**748 MB**（改前改后都是），不是决定里引用的 1481 MB；1481 MB 只在**同进程先跑 GPU 再跑 CPU**
+时出现（改后仍是 1480 MB），控制实验：`OPT=0` 时 CPU 行 748 MB；只开编译开关（快路径关、编译根本
+不执行）748 MB；全快路径关编译 748 MB；**反向 `--devices cpu,gpu` 时被抬高的是 GPU 行（1512 MB）**。
+即"CPU 上编译翻倍内存"是**多后端 harness 的产物**（第二个后端的峰值计数含第一个后端留下的东西），
+触发条件是**第一个后端真的建过 `mx.compile` 变体**。实现按裁定照做（且仍站得住：CPU 上编译无延迟
+收益、冷启动无收益），但报告 22.2 不重复那个 2× 结论，并写清"跨后端那一行不能当作该后端的成本"。
+
+**③ CPU 延迟（交错 3 臂，同进程，25 步，load 9.2–9.3）**：clean env（新默认）193.6 ms、
+`OPT=1`（翻转态）186.1 ms、`OPT=0` 190.8 ms；配对 p50 = **1.0124×** 与 **0.9900×**，
+都在 IQR 内 → "不劣于 `OPT=0`（漂移内）"成立；同进程 token 25/25 一致、0/1832 不同。
+
+**④ 批量烘焙（`models/bake.py` + `mlx_bench.py --bake`）**：只批 pose 阶段（round 1 认定唯一可批的
+阶段），其余阶段跑已验收代码；两臂唯一差别是用哪次前向产生 pose logits（新增 `pose_logits=` 缝，
+默认 `None` ＝逐字节原路径）。B=1/2/4/8/16，GPU、5 次中位数：加速 **0.950× / 1.162× / 0.961× /
+1.180× / 1.233×**，每场景 29.25→21.62 ms；**同 duration 批次**（同一 style 不同 seed）到
+**1.185× / 1.377× / 1.336×**——**按 duration 分组比加大 B 更值钱**（B=16 时 1.336× vs 1.233×）。
+阶段层面 B=4/8/16 的 pose 前向是 **2.50× / 5.04× / 7.18×**（round 1 是 3.12×/6.05×），
+但单次串行 pose 只占一步 6.46/27.79 ms ≈ 23 %，**端到端上限 ~1.25×**；round 1 的 2.4–6.1×
+是阶段吞吐，不是烘焙吞吐，报告 23.4 写清了。
+
+**⑤ token 战役**：**31/31 场景 `pose.tokens` 逐位一致、`sampling_uniforms` 逐位一致、duration 一致、
+最终动作逐位相同（roots/rotations 差恰为 0）**，0/2136 个 token 决策不同（含混合与同 duration 两种）。
+可解释且量化：`mx.vmap` 把 matmul 降成批量原语，**B=1 就差 1.98e-04**，B=16 差 3.357e-04；
+而战役中最紧的决策余量（Gumbel 加噪后 top1−top2）是 2.985e-03 → **扰动/最紧余量 = 0.112×**。
+注意：**批量不逐位**（是数值改动，不是等价的），所以它的正确性只能靠战役，不能靠相等。
+结论 + 规则写在 `docs/decisions/0006-batch-bake-safe-b.md`（**提案，等人批**）：可复现档＝跑过战役且
+逐场景一致的最大 B（本版本证据 `B ≤ 16`）；更大的 B 或没重跑战役的 B 只能作草稿档，且
+**manifest 必须记 `batch_size` 与档位**。
+
+**⑥ host 同步削减（逐项试，全部默认关）**：默认每步 6 次 `np.asarray` 设备读（其中 5 次是真等待）。
+① `decoder_defer`（解码器输出不回host）6→5；② `pred_local_defer`（预测 local root 留在设备，
+`arctan2` 与 NumPy 差 1 ulp，是风险点）6→5；③ `root_boundary_reuse`——发现 `duration_logits` 与
+`plan` **各重建一次 boundary embedding**，孤立实测 **0.683 ms p50**（探针阶段的 25 %），纯重复工作，
+去掉后逐字节一致。正确性门：三臂各自与合起来都是 **30/30 token 一致、uniforms 一致、最终动作逐位相同**，
+`mlx_align` 不回归，全开时 GPU 文档仍逐字节一致。速度（交错配对 p50）：单项 **1.0035× / 1.0207× /
+1.0443×**，三项合起来 6 个 50 步样本 = 1.0579/1.0554/1.0411/1.0389/1.0339/1.0333 →
+**中位数 1.0400×**，**都没过 1.05×** → **三项全部默认关闭**并写明（前两个样本单独看会误判为通过，
+这正是"先钉死门槛"的意义）。即：那 4–5 次同步合计只值**约 1–4 %**，第 19 节的"kernel drain"假设
+不成立，真正的成本是**互相依赖的 kernel 链**。
+
+**⑦ 测量环境**：load 全程 **9.2–23.5**（1 分钟，桌面共享），每次测量都记录了 load；所有前后对比都是
+同进程交错/轮换配对，每项 ≥25 步，报告 p50/p90/max。绝对值仍被抬高约 10 %。
+
+**⑧ 一个必须记下的自身事故（方法论）**：我的 `/tmp` 门禁脚本一开始把 `--arm "label:MOTIONBRICKS_MLX_OPT=..."`
+的整串当成了**选项值**，于是"单开关臂"其实跑的是默认路径——第一版 token 战役因此无效。
+发现方式是给脚本加"打印解析后的开关值"，并写了一个统计 `np.asarray` 调用点的计数器（它同时暴露了
+`pred_local_defer` 第一版仍在读回 root 输出、实际一次同步都没去掉）。修正后重跑了全部战役与计时。
+教训：**每条臂都要有"这条臂真的生效了"的独立证据**，否则"一致"可能只是因为两边是同一个配置。
+
+**红线遵守**：只改 `src/motionbricks_mlx/{data,models}/**`（`nn/root/pose/transition/agent` 与新增
+`models/bake.py`）、`scripts/mlx_bench.py`（追加 `--bake*`，既有语义不变）、`tests/test_mlx_*.py`、
+`docs/optimization-report.md`（追加）、本文件、新增 `docs/decisions/0006-...md`（**提案**）；
+`training/**`、`train_*.py`、`eval/**`、`eval_*.py`、`motion-representation.md`、`README.md`、
+`NOTICE`、`LICENSE`、`pyproject.toml` 未动；`eval/` 未跟踪也未提交；`mlx_plan.py`/`mlx_align.py`
+语义未改；所有 `mlx_plan.py` 调用都显式带 `--out`；参考仓库只读；**无 push**。

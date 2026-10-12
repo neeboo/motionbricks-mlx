@@ -924,3 +924,441 @@ Every item reports, in this order: the paired ratio with its inter-quartile
 range, the pooled p50 / p90 / max per arm, the token-identity count, and the
 verdict against the rule above.  A rejected item keeps its number and its
 reason.  Nothing in this section is edited after the measurements.
+
+---
+
+# Round 3 results
+
+Everything below was written after the measurements.  Section 21 was not edited.
+
+## 22. Item 1 — decision 0005: backend-conditional `*_compile` defaults
+
+`models/nn.py` now derives each switch's *effective* default in
+`declared_default()`: `OPT_DEFAULTS` remains the single description of the
+adopted path (the float32 group on), and the three compile switches —
+`pose_compile`, `root_compile`, `decoder_compile` — are the only members of
+`_BACKEND_CONDITIONAL`, so they default on for Metal and off for every non-Metal
+backend.  `metal_backend()` reads `mx.default_device()` per call (the backend is
+chosen by `Bundle(device=...)` after import), and falls back to the declared
+value if the probe ever fails.  An explicit `MOTIONBRICKS_MLX_OPT` value still
+wins on either backend, so every earlier A/B stays reproducible.
+
+### 22.1 Acceptance 1 — the GPU default path is unchanged
+
+| check | result |
+| --- | --- |
+| GPU plan document before vs after the change | `diff -q` clean, sha256 `ccda1952c967c8d7e893a795908f7de278f2acda1ce5ba1e1889692a8904a7c5` |
+| `mlx_align.py plan out/ref/plan-ref.json <gpu default>` | `ALIGNMENT OK`, worst margin rotation angle **0.26x** tolerance |
+| `mlx_align.py trace out/ref/trace/transition-0.json --device gpu` | `TRACE OK`; `pose.tokens` `0.000e+00`, `pose.sampling_uniforms` `0.000e+00`, `decoder.quantized` `0.000e+00` |
+| `mlx_align.py trace ... --device cpu` | `TRACE OK`; `pose.tokens` `0.000e+00`, `pose.sampling_uniforms` `0.000e+00` |
+| `mlx_plan.py --device gpu --repeat 2 --out /tmp/...` | `deterministic over 2 runs with fixed seeds` |
+| `mlx_plan.py --device cpu --repeat 2 --out /tmp/...` | `deterministic over 2 runs with fixed seeds` |
+
+Both documents were written to `/tmp`, per decision 0005's rule that
+`mlx_plan.py` is always given an explicit `--out`.
+
+### 22.2 Acceptance 2 — the CPU default, and a correction to the premise
+
+The decision's premise is that the compile switches cost the CPU backend a
+**doubled** peak (`748 -> 1481 MB`).  That number does **not** reproduce in a
+CPU-only process, and the ablations below locate what actually produced it.
+Every row is a fresh process, `--steps 25`, recorded load in the table.
+
+| # | configuration | protocol | CPU p50 | CPU MLX peak | CPU RSS |
+| --- | --- | --- | --- | --- | --- |
+| A | default, **before** this change | `--devices cpu` | 165.4 ms | **748 MB** | 865 MB |
+| B | `MOTIONBRICKS_MLX_OPT=0` | `--devices cpu` | 178.2 ms | 748 MB | 853 MB |
+| A' | default, **after** this change | `--devices cpu` | (paired, 22.3) | **748 MB** | 853 MB |
+| C | default, before | `--devices gpu,cpu` | 189.3 ms | **1481 MB** | 1615 MB |
+| D | `OPT=0` | `--devices gpu,cpu` | 175.4 ms | 748 MB | 1018 MB |
+| E | default, after | `--devices gpu,cpu` | 178.9 ms | **1480 MB** | 1603 MB |
+| F | default, after | `--devices cpu,cpu` | — | 748 / 748 MB | 853 / 854 MB |
+| G | `OPT=0,pose_compile=1,root_compile=1,decoder_compile=1` | `--devices gpu,cpu` | — | 748 MB | 862 MB |
+| H | `MOTIONBRICKS_MLX_OPT=1,pose_compile=0,root_compile=0,decoder_compile=0` | `--devices gpu,cpu` | — | 748 MB | 862 MB |
+| I | default, before | `--devices cpu,gpu` | CPU 216.8 | CPU 748, **GPU 1512 MB** | 1593 MB |
+
+What the table shows:
+
+* **A CPU-only process never pays the 2x.**  Before the change the CPU default
+  was 748 MB (A, three times), exactly like `OPT=0` (B) and exactly like the
+  non-compiled CPU configuration the decision quotes (748 MB).  The change
+  therefore recovers **no memory on this machine**; acceptance item 2's
+  "back to ~748 MB" holds *before* the change as well.
+* The 1481 MB is produced by the **two-backend protocol**: the second backend's
+  `get_peak_memory()` and RSS include what the first one left behind.  It is not
+  specific to the CPU side — run the devices the other way round and the **GPU**
+  row is the inflated one (I: 1512 MB for a backend whose own peak is 779 MB).
+* The trigger is `mx.compile` variants having actually been **built on the first
+  backend**.  G (compiles enabled but the fast paths off, so no compile ever
+  runs) is 748; H (every fast path on, compiles off) is 748; the full default,
+  where Metal compiles, is 1480-1481.  Because the Metal backend keeps its
+  compiles by design, a `gpu,cpu` process still shows ~1480 in the CPU row after
+  this change (E) — the artifact is in the harness, not in the CPU default.
+
+The honest reading: **the original claim "compiling costs the CPU backend 2x
+memory" is not supported.**  The rule the decision ratifies is implemented as
+written (and is still justified: the CPU compiles bought no latency and cost
+~60 ms of cold start, section 4), but this report does not repeat the 2x
+finding, and the harness's `--devices a,b` row for the *second* device should
+not be read as that device's cost.
+
+### 22.3 Acceptance 2 (latency) — CPU default vs `OPT=0` and vs the flip
+
+Interleaved three-arm run, one process, CPU, 25 steps, load `9.17 -> 9.33`:
+
+| arm | p50 | p90 | max | paired p50 vs clean env | IQR |
+| --- | --- | --- | --- | --- | --- |
+| clean env (**new** CPU default: compiles off) | 193.6 ms | 221.7 | 551.0 | 1.0000x | — |
+| `MOTIONBRICKS_MLX_OPT=1` (the flip state, compiles on) | 186.1 ms | 241.5 | 294.5 | **1.0124x** | 0.969-1.060 |
+| `MOTIONBRICKS_MLX_OPT=0` (pre-0004) | 190.8 ms | 215.6 | 229.3 | **0.9900x** | 0.949-1.059 |
+
+Cold start, single fresh process per arm, load 10.7-11.0: default with the
+compiles **on** 635 ms, with them **off** (the new default) 497 ms, `OPT=0`
+451 ms.  These are one sample each and cold start is the noisiest number in this
+report, so the honest statement is only that the CPU compile variants do not
+*help* cold start (round 1 measured ~60 ms of variant compilation; see 26.5).
+
+So on the CPU the new default is **1.24 % faster than the flip state** and
+**1.00 % slower than `OPT=0`** — both inside their inter-quartile ranges, i.e.
+"not worse, within drift", which is what the decision asks for.  Token identity
+in the same process: **25/25 steps identical, 0/1832 tokens differ** against the
+new default for both arms.
+
+### 22.4 Acceptance 3 — tokens, determinism, tests
+
+* `pytest`: **135 passed, 1 skipped** with the change in place (the round-3
+  additions bring it to 140+; see section 25).
+* 5 seeds x 6 steps on both backends: `tests/test_mlx_agent_math.py::test_token_identity_end_to_end`
+  passes, i.e. `pose.tokens` and `pose.sampling_uniforms` are element-for-element
+  identical between the pre-round-2 reference and the round-3 default.
+* `--repeat 2` on both backends: deterministic (22.1).
+* The CPU default document moves by `2.116e-06 m` on roots against the
+  pre-change CPU document (the known CPU `mx.compile` fusion difference,
+  section 4); alignment stays `0.27x` tolerance, which is the tool's own
+  identical-file floor for the derived rotation-angle column (see 22.5).
+
+### 22.5 A measurement artifact worth recording
+
+`mlx_align.py`'s derived `rotation angle (deg)` column compares
+`angle_between(a, b)` against zero, and `export/plan_json.angle_between`
+amplifies float32 quaternion dot-product rounding through `arccos` near 1.  Two
+**byte-identical** documents therefore report `5.070e-02 deg` (0.25x tolerance),
+not zero: the column has a floor of about `5.4e-02 deg`.  Every "worst margin:
+rotation angle at ~0.26x tolerance" line in this report is that floor, not a
+measured drift.
+
+## 23. Item 2 — batch bake: throughput, and the token campaign
+
+### 23.1 What was built
+
+`models/bake.py` batches **the pose stage only** — the one stage round 1 found to
+have independent work (section 5) — through
+`PosePlanner.plan_batch()`, which wraps the single-scenario `_core` in
+`mx.vmap` + `mx.compile`.  Every other stage runs the accepted code per
+scenario.  The two arms are:
+
+* **reference**: each scenario planned **alone** through the ordinary pipeline,
+  with each scenario's own pose inputs recorded on the way past;
+* **batched**: those recorded inputs go through one batched forward per
+  **token-count group**, and each row is handed back to the pipeline through a
+  new one-parameter seam (`run_transition(..., pose_logits=...)`, threaded
+  through `Agent.plan`).  Sampling, the codebook gather, the decoder and the
+  motion decode are byte-for-byte the accepted code on both arms; the only
+  difference is which forward produced the logits.
+
+Scenarios that selected different durations cannot share a forward (the
+compiled variants and the GGML layout reshapes are shape-keyed), so the batched
+arm groups by token count.  `pose_logits=None` — the default — is the accepted
+path byte for byte, verified by re-running the GPU default document (`diff -q`
+clean).
+
+### 23.2 Why the batched forward is not bitwise — and why that did not matter here
+
+`mx.vmap` lowers every per-row `matmul` to a batched primitive with a different
+accumulation order, so a batched row is **never** bitwise equal to the serial
+forward, not even at `B = 1`.  Measured on the pose logits, same inputs:
+
+| B | 1 | 2 | 4 | 8 | 16 |
+| --- | --- | --- | --- | --- | --- |
+| max abs deviation from the serial forward | 1.98e-04 | 1.98e-04 | 3.05e-04 | 3.05e-04 | 3.36e-04 |
+
+(Round 1's hand-rolled batch reported `B = 1/2` bitwise and `B >= 4` at
+`1.5e-05`; `mx.vmap` starts from a different primitive, which is why even
+`B = 1` differs here.)  This is a numerics change and is treated as one: it is
+why the switch's own correctness rests on the campaign below, not on equality.
+
+### 23.3 End-to-end bake: throughput and latency
+
+`--bake 1,2,4,8,16 --bake-repeats 5 --devices gpu`, load `13.7 -> 13.5`.
+"Serial" is `B` scenarios planned one after another; "batched" is the batched
+pose plus the per-scenario accepted tail, both inside one timed region.  Both
+arms warm up once before timing, and the arm order alternates per repeat.
+
+| B | serial p50 | batched p50 | speedup | per-scenario (batched) | throughput | single-scenario p50 | token groups |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 27.79 ms | 29.25 ms | **0.950x** | 29.25 ms | 34.19/s | 27.79 ms | {11:1} |
+| 2 | 49.06 | 42.21 | **1.162x** | 21.10 ms | 47.38/s | 27.79 ms | {11:2} |
+| 4 | 103.82 | 108.04 | **0.961x** | 27.01 ms | 37.02/s | 27.79 ms | {11:2, 7:1, 8:1} |
+| 8 | 215.89 | 182.93 | **1.180x** | 22.87 ms | 43.73/s | 27.79 ms | {11:3, 7:2, 8:1, 6:2} |
+| 16 | 426.56 | 345.99 | **1.233x** | 21.62 ms | 46.24/s | 27.79 ms | {11:5, 7:7, 8:1, 6:3} |
+
+Styles cycling across four assets fragments the batch into 3-4 token-count
+groups, and `B = 4` is *slower* than serial because two of its three groups hold
+a single row.  With a **duration-homogeneous** batch (`--bake-homogeneous`, one
+style, different seeds — one group of `B`) the same measurement gives:
+
+| B | serial p50 | batched p50 | speedup | per-scenario (batched) | throughput | token groups |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4 | 101.92 ms | 86.00 ms | **1.185x** | 21.50 ms | 46.51/s | {11:4} |
+| 8 | 219.18 | 159.15 | **1.377x** | 19.89 ms | 50.27/s | {11:8} |
+| 16 | 430.21 | 321.93 | **1.336x** | 20.12 ms | 49.70/s | {11:16} |
+
+So **grouping by duration is worth more than raising B**: at `B = 16` the
+homogeneous batch is 1.336x against 1.233x fragmented, and it uses one compiled
+variant instead of four.
+
+### 23.4 Stage-level view: where the ceiling comes from
+
+Homogeneous batch, 16 real scenarios, pose stage timed alone (load 14.9):
+
+| B | batched pose p50 | per scenario | vs `B` separate forwards |
+| --- | --- | --- | --- |
+| 1 | 7.789 ms | 7.789 ms | 0.83x |
+| 2 | 10.225 | 5.112 | 1.26x |
+| 4 | 10.338 | 2.585 | **2.50x** |
+| 8 | 10.260 | 1.283 | **5.04x** |
+| 16 | 14.398 | 0.900 | **7.18x** |
+
+The stage itself scales as round 1 found (2.50x / 5.04x at `B` = 4 / 8 against
+round 1's 3.12x / 6.05x; `B = 16`, not measured then, reaches 7.18x).  But a
+single serial forward is 6.46 ms of a 27.79 ms step, so the pose stage is ~23 %
+of the work and **batching it alone cannot exceed ~1.25x end-to-end** on this
+composition; the measured 1.18-1.38x is that ceiling, reached.  The round-1
+2.4-6.1x figure is the *stage's* throughput, not the bake's, and this section is
+the number that should be quoted for a bake.
+
+### 23.5 The token campaign
+
+Per-scenario comparison against **the same scenario run alone** (`B = 1`
+semantics), `pose.tokens`, `pose.sampling_uniforms`, the selected duration and
+the final action:
+
+| B | scenarios | tokens identical | uniforms identical | duration identical | differing tokens | worst `roots` | worst `rotations` | worst angle |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 | **1/1** | 1/1 | 1/1 | 0/88 | 0.000e+00 m | 0.000e+00 | 0.0548 deg |
+| 2 | 2 | **2/2** | 2/2 | 2/2 | 0/176 | 0.000e+00 | 0.000e+00 | 0.0601 |
+| 4 | 4 | **4/4** | 4/4 | 4/4 | 0/296 | 0.000e+00 | 0.000e+00 | 0.0626 |
+| 8 | 8 | **8/8** | 8/8 | 8/8 | 0/536 | 0.000e+00 | 0.000e+00 | 0.0626 |
+| 16 | 16 | **16/16** | 16/16 | 16/16 | 0/1040 | 0.000e+00 | 0.000e+00 | 0.0626 |
+| 4 (homog.) | 4 | 4/4 | 4/4 | 4/4 | 0/352 | 0.000e+00 | 0.000e+00 | 0.0583 |
+| 8 (homog.) | 8 | 8/8 | 8/8 | 8/8 | 0/704 | 0.000e+00 | 0.000e+00 | 0.0629 |
+| 16 (homog.) | 16 | 16/16 | 16/16 | 16/16 | 0/1408 | 0.000e+00 | 0.000e+00 | 0.0711 |
+
+**31/31 scenarios, 0 of 2136 token decisions differ, and because the tokens are
+identical the final action is bit-identical** (the `roots`/`rotations` columns
+are exactly zero; the "worst angle" column is the `angle_between` float32 floor
+of 22.5, not drift).
+
+That is not luck, and the campaign can say why.  A token changes only if the
+logit perturbation exceeds that decision's own margin — the gap between the best
+and second-best Gumbel-noised score.  Measured on the same 16 scenarios:
+
+* largest logit perturbation, batched vs serial: **3.357e-04** (growing from
+  1.984e-04 at `B = 1`);
+* **smallest** decision margin over all 16 scenarios: **2.985e-03** (median
+  3.683e-02);
+* ratio: **0.112x** — the perturbation is ~9x smaller than the tightest
+  decision it could flip.
+
+### 23.6 Verdict and the safe-B rule
+
+Verdict per section 21 item 2 (throughput **and** token identity; never quoted as
+a single-plan latency win): **the bake is usable, and on this evidence every
+measured `B` up to 16 is token-identical and action-identical.**
+
+**Safe-B rule (proposed as a decision, section 26):**
+
+1. A bake batch is **reproducible** only if every scenario in it matches the
+   same scenario run alone on `pose.tokens`, `pose.sampling_uniforms` and the
+   final action.  The largest `B` that passes is that release's *reproducible
+   bake tier*.
+2. On this evidence the reproducible tier is **`B <= 16`** (tested), with the
+   measured safety factor above: perturbation 0.112x of the tightest margin.
+3. Any larger `B`, or any `B` whose campaign was not re-run for the release, is
+   a **fast-draft tier only**, and the **batch size must be recorded in the
+   product manifest** together with the campaign result.
+4. Batching changes numerics (it is not bit-identical to `B = 1`); the tier is
+   about *discrete* identity and the final action, not about bitwise floats.
+5. **Group by duration.**  Raising `B` inside one duration group is worth more
+   than raising `B` across mixed ones (23.3), and mixed groups compile one
+   variant per duration.
+
+## 24. Item 3 — host synchronisations per step
+
+### 24.1 The count, and the three candidates
+
+`transition.py` materialises device arrays with explicit `np.asarray(...)` calls;
+`/tmp`-based instrumentation that patches `numpy.asarray` and names its call site
+counts them per step (GPU, 6 steps, `capture_trace=False`):
+
+| arm | reads/step | sites |
+| --- | --- | --- |
+| round-3 default | **6.00** | duration probe, root output, pose logits, decoder output, `roots`, `rotations` |
+| `decoder_defer=1` | **5.00** | decoder output gone |
+| `pred_local_defer=1` | **5.00** | root output gone |
+| `decoder_defer=1,pred_local_defer=1` | **4.00** | both gone |
+| `+ root_boundary_reuse=1` | **4.00** | (removes device work, not a read) |
+
+Two of the six reads are covered by an earlier read of the same graph and cost no
+extra wait, so the honest statement is **five waits per step, three with both
+deferrals on**.  The candidates:
+
+1. **`decoder_defer`** — hand the decoder's output straight to
+   `motion_rep.decode_motion` instead of reading it back and re-uploading it.
+   Same values, one fewer wait.
+2. **`pred_local_defer`** — compute the predicted local root on the device
+   (`_predicted_local_device`), so the root planner's output is never read back;
+   the read that remains happens when the pose logits are fetched.  MLX's
+   `arctan2` is *not* bit-identical to NumPy's (measured 2.384e-07, one ulp);
+   `mx.remainder` is exact.
+3. **`root_boundary_reuse`** — `run_transition` ran the duration probe and then
+   `RootPlanner.plan`, and **both** rebuilt the boundary embedding from the same
+   tensors (only the probe transformer was deduplicated by round 1's
+   `root_dedup`).  Measured in isolation: boundary embedding **0.683 ms p50**,
+   i.e. 25 % of the 2.70 ms probe stage, duplicated on every step.  `probe()` now
+   returns the boundary tensors and `plan(boundary=...)` reuses them.
+
+With `capture_trace=True` the deferrals are *counterproductive* (6 -> 9 reads):
+the trace materialises values the default path already had on the host
+(`predicted_local`, `pose_root`, `external_condition`, the decoder output).  They
+are throughput-path switches, not trace-path ones.
+
+### 24.2 Correctness gate (all three, and together)
+
+GPU, 5 seeds x 6 steps, interleaved arms in one process, arms verified by
+printing their resolved switch values:
+
+| arm | `pose.tokens` identical | `sampling_uniforms` identical | duration identical | worst `roots` | worst `rotations` |
+| --- | --- | --- | --- | --- | --- |
+| `decoder_defer=1` | **30/30** | 30/30 | 30/30 | 0.000e+00 | 0.000e+00 |
+| `pred_local_defer=1` | **30/30** | 30/30 | 30/30 | 0.000e+00 | 0.000e+00 |
+| `root_boundary_reuse=1` | **30/30** | 30/30 | 30/30 | 0.000e+00 | 0.000e+00 |
+| all three | **30/30** | 30/30 | 30/30 | 0.000e+00 | 0.000e+00 |
+
+`mlx_align plan`/`trace` were re-run with the switches on: both `OK`, tokens and
+uniforms at `0.000e+00`.  The GPU default document with all three switches on is
+**byte-identical** to the round-3 default document.  Alignment does not regress.
+
+### 24.3 Speed: the paired numbers, and the verdict
+
+Interleaved inside one process, arm order rotated, same step sequence, p50/p90/max
+per arm.
+
+| run | load | decoder_defer | pred_local_defer | root_boundary_reuse | all three |
+| --- | --- | --- | --- | --- | --- |
+| 25 steps (pre-fix*) | 10.9 | 1.0203x [0.960-1.057] | 0.9792x [0.825-1.029] | — | 1.0100x [0.945-1.086] (two of three) |
+| 50 steps (pre-fix*) | 23.5 | 0.9814x [0.908-1.052] | 0.9325x [0.817-1.043] | 1.0137x [0.894-1.112] | 1.0199x [0.953-1.105] |
+| 50 steps | 12.6 | 1.0035x [0.960-1.065] | 1.0207x [0.950-1.081] | 1.0443x [0.964-1.121] | 1.0579x [1.006-1.108] |
+| 50 steps | 13.8 | — | — | — | 1.0554x [1.004-1.097] |
+| 50 steps | 14.9 | — | — | — | 1.0339x [0.953-1.081] |
+| 50 steps | 13.0 | — | — | — | 1.0389x [1.015-1.087] |
+| 50 steps | 13.1 | — | — | — | 1.0411x [1.014-1.099] |
+| 50 steps | 13.1 | — | — | — | 1.0333x [0.994-1.080] |
+
+\* "pre-fix": the first `pred_local_defer` implementation still materialised the
+root planner's output, so it removed no read at all (5.00 -> 6.00 reads/step
+before the fix, 4.00 after).  Those two rows are kept because they are honest
+measurements of "move the maths to the device without removing the read", and
+they are superseded for the switch's verdict.
+
+Applying the frozen rule:
+
+* **No single item reaches 1.05x.**  Their point estimates are ~1.00-1.02x
+  (`decoder_defer`), ~1.02x (`pred_local_defer`), ~1.03-1.04x
+  (`root_boundary_reuse`) — with inter-quartile ranges that straddle 1.0.
+* **The combination does not reach it either once sampled properly**: six
+  50-step post-fix samples give 1.0579, 1.0554, 1.0411, 1.0389, 1.0339, 1.0333
+  — **median 1.0400x**, below the bar.  (The first two samples alone would have
+  read as a pass; this is exactly why the criteria fix a bar and why a single
+  run is not evidence.)
+* **Verdict: all three default OFF**, recorded as rejected with these numbers.
+  They remain available as switches, with a verified correctness gate, for a
+  caller that wants the ~4 % on a throughput path — and the safe statement is
+  that the four-to-five per-step host synchronisations are worth **~1-4 % of a
+  step between them**, not the kernel-drain cost section 19 hypothesised.  The
+  dependent kernel chain, not the drain count, is the remaining cost.
+
+## 25. Round-3 correctness and tests
+
+* `mlx_align.py plan` (reference vs the GPU default) and `mlx_align.py trace`
+  (both backends): `ALIGNMENT OK` / `TRACE OK`, with `pose.tokens`,
+  `pose.sampling_uniforms` and `decoder.quantized` at `0.000e+00`.
+* Token identity, 5 seeds x 6 steps, both backends:
+  `tests/test_mlx_agent_math.py::test_token_identity_end_to_end` passes.
+* The bake seam is exact: supplying the pipeline's own pose logits reproduces
+  `roots`, `rotations_xyzw` and `pose.tokens` bit for bit
+  (`tests/test_mlx_bake.py::test_pose_logits_seam_reproduces_the_accepted_pipeline`).
+* The batched forward's deviation is pinned as a **band**, so a future change
+  that makes the lowering exact — or ten times worse — fails the test.
+* `tests/test_mlx_optimizations.py` now pins the backend-conditional rule in
+  both directions, the fact that only the three compile switches are conditional,
+  that an explicit environment value wins on either backend, and that the three
+  round-3 candidates are declared off.
+* `pytest`: **140 passed, 1 skipped** with round 3 in place, against the
+  **135 passed, 1 skipped** this round started from (the count may only grow).
+
+## 26. What is left, and the decisions this round proposes
+
+1. **The bake's ceiling is the pose stage's share, not the batch size.**
+   Batching the pose stage alone is capped at ~1.25x end-to-end (23.4) because
+   the root planner and the decoder are ~76 % of a step and are not batched here.
+   The next bake step is batching those two stages (they are per-time
+   convolutional/transformer work with a natural leading axis), which is what
+   would move the bake towards the stage-level 2.5-7.2x.
+2. **Duration-homogeneous batches.**  Fragmentation into token-count groups cost
+   15-25 % of the achievable speedup at `B = 16` (23.3).  A producer that can fix
+   the duration (restrict `allowed_tokens`) should do so, and the manifest should
+   record both the batch size and the grouping.
+3. **A decision proposal for the bake rule** is written to
+   `docs/decisions/0006-batch-bake-safe-b.md` (proposal only; the lead ratifies).
+4. **The host synchronisations are not the lever.**  Removing two of five waits
+   and a duplicated 0.68 ms embedding is worth ~4 % (24.3).  If single-plan
+   latency matters again, the measured targets are the serial root/decoder stages
+   and the host maths, not the drain count.
+5. **Re-measure the `*_compile` default on an idle machine** before treating the
+   CPU latency comparison of 22.3 as final: all three arms sit within 1.25 % of
+   each other at load 9-14, which is at the resolution limit of the method.
+
+## 27. Reproduction (round 3)
+
+```
+# decision 0005: the GPU default path is unchanged; always pass --out
+./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/r3-plan-gpu.json
+diff -q /tmp/r3-plan-gpu.json out/plan-gpu-before.json      # byte-identical
+
+# the CPU default, per process and never across two backends in one run
+./.venv/bin/python scripts/mlx_bench.py --devices cpu --steps 25
+MOTIONBRICKS_MLX_OPT=0 ./.venv/bin/python scripts/mlx_bench.py --devices cpu --steps 25
+
+# the interleaved paired arms (25+ steps, order rotated inside one process)
+./.venv/bin/python scripts/mlx_bench.py --paired "" "MOTIONBRICKS_MLX_OPT=1" \
+    "MOTIONBRICKS_MLX_OPT=0" --devices cpu --steps 25 --paired-tokens
+./.venv/bin/python scripts/mlx_bench.py --paired "" \
+    "MOTIONBRICKS_MLX_OPT=decoder_defer=1,pred_local_defer=1,root_boundary_reuse=1" \
+    --devices gpu --steps 50
+
+# the batch bake and its token campaign
+./.venv/bin/python scripts/mlx_bench.py --bake 1,2,4,8,16 --bake-repeats 5 --devices gpu
+./.venv/bin/python scripts/mlx_bench.py --bake 4,8,16 --bake-homogeneous \
+    --bake-repeats 5 --devices gpu
+
+# alignment, determinism, tests
+./.venv/bin/python scripts/mlx_align.py plan out/ref/plan-ref.json /tmp/r3-plan-gpu.json
+./.venv/bin/python scripts/mlx_align.py trace out/ref/trace/transition-0.json --device gpu
+./.venv/bin/python -m pytest -q
+```
+
+The per-arm scratch tools used for the round-3 numbers (the 5x6 token gate, the
+`np.asarray` drain counter) lived in `/tmp/r3/`; their measurements are quoted
+above and the properties they rest on are pinned by `tests/test_mlx_bake.py` and
+`tests/test_mlx_optimizations.py`.
