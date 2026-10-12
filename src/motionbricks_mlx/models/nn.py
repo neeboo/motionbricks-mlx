@@ -85,6 +85,12 @@ OPT_DEFAULTS: dict[str, bool] = {
     # runs unless a caller opts in.
     "bake_root_batch": False,
     "bake_decoder_batch": False,
+    # Round-6 batch-bake switch: batch the motion decode -- a device graph the
+    # accepted path drains once per scenario -- into one graph per shape group.
+    # Only the single-pass orchestrator can own it; declared **off**, so the
+    # accepted path and the round-3/round-4 bake paths are unchanged unless a
+    # caller opts in.  Verdict in `round 6 results` of docs/optimization-report.md.
+    "bake_decode_batch": False,
 }
 
 # Switches whose *effective* default is decided by the execution backend

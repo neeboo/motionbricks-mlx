@@ -158,3 +158,54 @@ def decode_motion(normalized_local_motion: mx.array, mean: mx.array, std: mx.arr
                           @ global_rotations[:, joint])
     local = mx.stack(blocks, axis=1)
     return roots, matrix_to_quaternion_xyzw(local)
+
+
+def decode_motion_batch(normalized_local_motion: mx.array, mean: mx.array, std: mx.array,
+                        parents: np.ndarray, initial_x: mx.array,
+                        initial_z: mx.array) -> tuple[mx.array, mx.array]:
+    """``decode_motion`` over a leading batch axis (round 6, bake path only).
+
+    The same arithmetic as :func:`decode_motion` with one extra leading dimension:
+    the *frame* axis becomes axis 1, so the cumulative travel still accumulates
+    along frames **within** each scenario, and the per-joint rotation product gains
+    a batch dimension.  ``initial_x`` / ``initial_z`` are ``(batch, 1)`` because
+    every scenario of a bake has its own origin (``decode_motion`` takes a scalar
+    because a single transition has one).
+
+    This exists because the decode was, by measurement, the most expensive
+    unbatched part of a bake: it is a *tiny* graph executed **once per scenario**,
+    so it is dominated by launch/drain cost rather than by arithmetic (report
+    section 45).  One batched graph is an order of magnitude cheaper than ``B``
+    small ones, exactly as the four neural stages were (rounds 3-4).
+
+    Bit-identity against ``B`` separate :func:`decode_motion` calls is asserted by
+    the bake's own instrument check (``bake.compare_bitwise``) on the real rows of
+    every campaign, and by ``tests/test_mlx_bake.py``; the switch that selects it
+    is declared off (``nn.OPT_DEFAULTS``), so the accepted path is untouched.
+    """
+    raw = unnormalize_local_motion(normalized_local_motion, mean, std)
+    batch, frames = raw.shape[0], raw.shape[1]
+
+    velocity = raw[:, :, 1:3] / FPS
+    travelled = mx.concatenate([mx.zeros((batch, 1, 2), dtype=raw.dtype),
+                                mx.cumsum(velocity, axis=1)[:, :-1]], axis=1)
+    roots = mx.stack([
+        travelled[:, :, 0] + initial_x,
+        raw[:, :, 3],
+        travelled[:, :, 1] + initial_z,
+    ], axis=-1)
+
+    rotation_offset = 4 + (JOINT_COUNT - 1) * 3
+    values = raw[:, :, rotation_offset:rotation_offset + JOINT_COUNT * 6]
+    global_rotations = cont6d_to_matrix(values.reshape(batch, frames, JOINT_COUNT, 6))
+
+    blocks = []
+    for joint in range(JOINT_COUNT):
+        parent = int(parents[joint])
+        if parent < 0:
+            blocks.append(global_rotations[:, :, joint])
+        else:
+            blocks.append(mx.swapaxes(global_rotations[:, :, parent], -1, -2)
+                          @ global_rotations[:, :, joint])
+    local = mx.stack(blocks, axis=2)
+    return roots, matrix_to_quaternion_xyzw(local)

@@ -12,6 +12,7 @@ result can be diffed stage by stage against the reference runtime's own
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import mlx.core as mx
@@ -152,14 +153,16 @@ class MlxPipeline:
 
     def transition_steps(self, constraints: TransitionConstraints, seed: int,
                          sampling_argmax: bool = False,
-                         capture_trace: bool = False):
+                         capture_trace: bool = False, profile=None):
         """One transition as a **resumable step generator** (round 5).
 
         Each neural forward is a ``yield`` of ``(stage, arguments, serial_call)``:
         ``stage`` names the forward point (``probe`` / ``plan`` / ``pose`` /
-        ``decoder``), ``arguments`` are the positionals a batched forward needs,
-        and ``serial_call`` recomputes the accepted single-scenario forward from
-        those same arguments.  The caller ``send``s that stage's output back in.
+        ``decoder``, plus the motion ``decode`` of round 6, which is a device graph
+        rather than a neural stage), ``arguments`` are the positionals a batched
+        forward needs, and ``serial_call`` recomputes the accepted single-scenario
+        forward from those same arguments.  The caller ``send``s that stage's
+        output back in.
 
         Every host-side intermediate -- normalisation, the dense target, the
         predicted local root, the pose conditions, sampling, the codebook gather,
@@ -170,6 +173,14 @@ class MlxPipeline:
         holds one of these generators per scenario and resolves the forward points
         in lockstep.
 
+        ``profile`` (round 6) is a
+        :class:`motionbricks_mlx.models.bake.Profile` (or ``None``, the accepted
+        path): when given, each host step below is bracketed as its own **leaf**
+        segment, so the direct instrument can attribute the pass without
+        subtracting two other numbers.  No bracket encloses another, and the
+        argument tuples handed to the device are bracketed as ``glue_upload``
+        rather than as part of the step that builds them.
+
         :meth:`run_transition` drives exactly this generator with the accepted
         forwards, so the accepted single-scenario path is this code, in this
         order: this is a refactor of it, never a second implementation.
@@ -179,6 +190,8 @@ class MlxPipeline:
         initial_x = float(constraints.global_root[0, 0])
         initial_z = float(constraints.global_root[0, 2])
 
+        if profile is not None:
+            started = time.perf_counter()
         raw_global = constraints.global_root
         normalized_global = np.empty((BOUNDARY_FRAMES, GLOBAL_ROOT_WIDTH), dtype=np.float32)
         normalized_local = np.empty((BOUNDARY_FRAMES, LOCAL_ROOT_WIDTH), dtype=np.float32)
@@ -228,6 +241,9 @@ class MlxPipeline:
         global_mask = constraints.has_global_root.reshape(-1, 1).astype(np.float32)
         local_mask = constraints.has_local_root.reshape(-1, 1).astype(np.float32)
         pose_mask = constraints.has_poses.reshape(-1, 1).astype(np.float32)
+        if profile is not None:
+            profile.add("glue_normalize", started)
+            started = time.perf_counter()
 
         # --- duration selection (src/planner.cpp:79-105) -----------------
         allowed = constraints.allowed_tokens
@@ -242,9 +258,14 @@ class MlxPipeline:
         if enabled == 1:
             tokens = 6 + int(np.flatnonzero(allowed)[0])
         elif enabled > 1:
+            if profile is not None:
+                upload_started = time.perf_counter()
             probe_args = (mx.array(normalized_global), mx.array(normalized_local),
                           mx.array(normalized_poses), mx.array(global_mask),
                           mx.array(local_mask), mx.array(pose_mask))
+            if profile is not None:
+                profile.add("glue_upload", upload_started)
+                started = time.perf_counter()              # after the upload bracket
             # The probe answers with ``(logits, boundary)`` on every path, so the
             # caller sees one protocol: the reuse switch returns the boundary
             # tensors, every other path returns ``None`` for them (a batched probe
@@ -253,7 +274,15 @@ class MlxPipeline:
                 probe_call = lambda: self.root.probe(*probe_args)   # noqa: E731
             else:
                 probe_call = lambda: (self.root.duration_logits(*probe_args), None)  # noqa: E731
+            if profile is not None:
+                profile.add("glue_duration", started)      # the pre-yield half
             mx_duration_logits, boundary = yield ("probe", probe_args, probe_call)
+            # A bracket may never span a ``yield``: while this generator is
+            # suspended the orchestrator runs other scenarios and the batched
+            # forward, and that time is theirs, not this step's.  The post-yield
+            # half therefore starts here and covers the probe logits' drain.
+            if profile is not None:
+                started = time.perf_counter()
             duration_logits = np.asarray(mx_duration_logits)
             best = -np.inf
             tokens = 0
@@ -265,6 +294,9 @@ class MlxPipeline:
             raise ValueError("style disallows every reachable duration")
         if tokens == 0:
             raise ValueError("style disallows every reachable duration")
+        if profile is not None:
+            profile.add("glue_duration", started)
+            started = time.perf_counter()
 
         # --- root planner -------------------------------------------------
         frames = tokens * 4
@@ -284,16 +316,23 @@ class MlxPipeline:
                 # normalized too (src/root.cpp:464-469).
                 dense_target[frame] = normalized_global[boundary_index]
                 dense_target_mask[frame, 0] = 1.0 if constraints.has_global_root[boundary_index] else 0.0
+        if profile is not None:
+            profile.add("glue_dense", started)
+            started = time.perf_counter()
         plan_args = (mx.array(normalized_global), mx.array(normalized_local),
                      mx.array(normalized_poses), mx.array(global_mask),
                      mx.array(local_mask), mx.array(pose_mask), tokens,
                      mx.array(dense_target), mx.array(dense_target_mask))
+        if profile is not None:
+            profile.add("glue_upload", started)
         # A batched root forward replaces this one entirely; the accepted serial
         # call is only made when the caller does not own the stage.
         predicted_global = yield (
             "plan", plan_args,
             lambda: self.root.plan(*plan_args, duration_logits=mx_duration_logits,
                                    boundary=boundary)[1])
+        if profile is not None:
+            started = time.perf_counter()
         # Round-3 switch ``pred_local_defer``: keep the predicted-local-root block
         # on the device, so the root planner's output is not read back to the host
         # and the synchronisation that used to happen here disappears into the
@@ -361,6 +400,9 @@ class MlxPipeline:
             predicted_local[frames - 1] = normalized_local[7]
         if capture_trace and not defer_local:
             trace["root.pred_local_root_values"] = predicted_local.reshape(-1).copy()
+        if profile is not None:
+            profile.add("glue_pred_local", started)
+            started = time.perf_counter()
 
         # --- pose conditions (src/planner.cpp:147-166) -------------------
         pose_condition = np.zeros((frames, INTERNAL_POSE_WIDTH), dtype=np.float32)
@@ -390,6 +432,9 @@ class MlxPipeline:
         if capture_trace:
             trace["pose.pose_condition"] = pose_condition.reshape(-1).copy()
             trace["pose.has_pose_condition"] = has_pose_condition.astype(np.float32)
+        if profile is not None:
+            profile.add("glue_condition", started)
+            started = time.perf_counter()
 
         # --- pose planner + sampling (src/planner.cpp:167-184) -----------
         pose_tokens = np.full((tokens, 8), 10, dtype=np.int32)
@@ -397,9 +442,13 @@ class MlxPipeline:
         has_pose_device = mx.array(has_pose_condition.astype(np.float32)[:, None])
         pose_args = (pose_tokens, pose_root_argument, pose_condition_device,
                      has_pose_device, tokens, tokens)
+        if profile is not None:
+            profile.add("glue_upload", started)
         # ``bake`` supersedes the round-3 ``pose_logits`` seam; ``_stage_forward``
         # applies that precedence and the seam itself, so neither is decided here.
         logits = yield ("pose", pose_args, lambda: self.pose.plan(*pose_args))
+        if profile is not None:
+            started = time.perf_counter()
         logits_np = np.asarray(PosePlanner.reshape_logits(logits), dtype=np.float32)
         uniform = None
         if not sampling_argmax:
@@ -418,6 +467,9 @@ class MlxPipeline:
             trace["root.pred_local_root_values"] = local_np.reshape(-1).copy()
             trace["pose.root_condition"] = np.asarray(
                 pose_root_argument, dtype=np.float32).reshape(-1).copy()
+        if profile is not None:
+            profile.add("glue_sample", started)
+            started = time.perf_counter()
 
         # --- VQ codebook lookup (src/planner.cpp:186-198) ----------------
         if fast:
@@ -447,6 +499,9 @@ class MlxPipeline:
             else:
                 trace["decoder.external_condition"] = external_condition.reshape(-1).copy()
             trace["decoder.has_target_condition"] = has_pose_condition.astype(np.float32)
+        if profile is not None:
+            profile.add("glue_gather", started)
+            started = time.perf_counter()
 
         # --- VQ decoder ---------------------------------------------------
         # Round-3 switch ``decoder_defer``: when nothing needs the decoder output
@@ -455,8 +510,12 @@ class MlxPipeline:
         # host synchronisation, not a computation.
         decoder_args = (mx.array(quantized), external_argument, pose_condition_device,
                         has_pose_device, tokens)
+        if profile is not None:
+            profile.add("glue_upload", started)
         decoded_device = yield ("decoder", decoder_args,
                                 lambda: self.decoder.decode(*decoder_args))
+        if profile is not None:
+            started = time.perf_counter()
         if capture_trace or not nn._opt("decoder_defer"):
             decoded = np.asarray(decoded_device, dtype=np.float32).reshape(frames, 413)
             decoded_argument = mx.array(decoded)
@@ -464,14 +523,32 @@ class MlxPipeline:
                 trace["decoder.output"] = decoded.reshape(-1).copy()
         else:
             decoded_argument = decoded_device
+        if profile is not None:
+            profile.add("glue_decoder_io", started)
+            started = time.perf_counter()
 
         # --- motion representation decode (src/motion_rep.cpp:252-303) ---
-        roots, rotations = motion_rep.decode_motion(
-            decoded_argument, self.mean, self.std, self.parents, initial_x, initial_z)
+        # Round 6 makes the decode a fifth **forward point** of the step
+        # generator.  It is not a neural stage, but it is a device graph that the
+        # accepted path drains once per scenario, and that drain turned out to be
+        # the most expensive unbatched part of a bake (report section 45).  As a
+        # forward point, the single-pass orchestrator can resolve one scenario
+        # group's decode as a single batched graph (``decode_motion_batch``) while
+        # every other caller -- the accepted path, the round-3 pose seam and the
+        # round-4 driver -- receives ``serial_call``, which is the accepted
+        # ``decode_motion`` call with the accepted arguments.
+        decode_args = (decoded_argument, self.mean, self.std, self.parents,
+                       initial_x, initial_z)
+        roots, rotations = yield ("decode", decode_args,
+                                  lambda: motion_rep.decode_motion(*decode_args))
+        if profile is not None:
+            started = time.perf_counter()
         roots_np = np.asarray(roots, dtype=np.float32)
         rotations_np = np.asarray(rotations, dtype=np.float32)
         if capture_trace:
             trace["decoded.roots"] = roots_np.reshape(-1).copy()
+        if profile is not None:
+            profile.add("glue_decode", started)
         return TransitionResult(roots_np, rotations_np, tokens, trace)
 
     def run_transition(self, constraints: TransitionConstraints, seed: int,

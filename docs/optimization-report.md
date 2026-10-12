@@ -2405,3 +2405,296 @@ and the verdict for each change** (adopted / rejected, by the rule above); the t
 default-path hashes; the **re-run campaign margins and the tier conclusion**; the
 `mlx_align` / `pytest` results; `docs/SUMMARY.md` (the closing baseline, whose full
 text is also the deliverable); the load averages; and the git state.
+
+---
+
+# Round 6 results
+
+Everything below was written after the measurements.  Section 43 was not edited
+after it was committed (`428af08`, the first commit of this round).
+
+## 44. The direct instrument, and the two ways it lied before it closed
+
+Round 5's decomposition subtracted two independently timed instruments and left
+`2.29 ms/scenario` unexplained (41).  This round times the pass itself:
+`perf_counter` brackets around every **leaf** segment, accumulated per batch.
+
+| where | segment | what it is |
+|---|---|---|
+| orchestrator | `setup` | per-scenario agent reset + `constraints_for` |
+| | `schedule` | shape grouping and request keying for one forward point |
+| | `stack` | gathering/concatenating one group's batched inputs |
+| | `forward` | the batched forward's Python call (graph build) |
+| | `eval` | `mx.eval`: the device drain |
+| | `scatter` | slicing the batched output back into per-scenario rows |
+| | `collect` | `finish_plan` (the agent maths) + `Run`/trace construction |
+| generator | `glue_normalize` `glue_duration` `glue_dense` `glue_pred_local` `glue_condition` `glue_upload` `glue_sample` `glue_gather` `glue_decoder_io` `glue_decode` | the host steps of `transition_steps` (see 43.1) |
+
+Two invariants make the sum meaningful, and both were violated by the first
+version of the instrument -- the closure number is what caught them:
+
+* **No bracket may enclose another.**  The first version bracketed `setup` around
+  the session list *including* `next(self.steps)`, which runs the generator's first
+  host steps: those are bracketed as `glue_*`, so they were counted twice (closure
+  `3.83 %`).  `_SinglePassSession.__init__` now only builds the agent and its
+  constraints; `start()` primes the generator separately.
+* **No bracket may span a `yield`.**  While a generator is suspended the
+  orchestrator is running other scenarios and the batched forward, and that time is
+  theirs.  The first version also left the probe's own drain
+  (`np.asarray(mx_duration_logits)`) just *outside* the post-resume bracket, which
+  put the largest single unattributed gap (0.38 ms per scenario, repeated 16 times)
+  exactly there.
+
+After both fixes the closure residual is `0.92-0.94 %` of the timed region in every
+run (0.057-0.089 ms/scenario), and it is what it should be: the orchestrator's own
+loop bookkeeping, the generator resume machinery and the bracket overhead.  There
+is no other unattributed item left.
+
+**The instrument is inert, and its own cost is measured.**  Every profile run also
+compares the profiled pass with the unprofiled one bit for bit
+(`bake.compare_bitwise`: tokens, uniforms, selected duration, roots, rotations,
+`np.array_equal`, no tolerance): `inert=True` in all of them.  The interleaved
+plain/profiled arms put the instrument's own cost at **-1.8 % to +2 %**, i.e. inside
+the drift of a shared desktop, which is why the profiles are quoted as medians of
+9-15 interleaved repeats.
+
+## 45. The closed decomposition, and where the 2.29 ms went
+
+`B = 16`, duration-homogeneous, GPU, decode not batched (round 5's configuration),
+9 interleaved repeats, load 11.4-14.8:
+
+| segment | ms/scenario | share | calls |
+|---|---|---|---|
+| `eval` (4 batched forward drains) | **3.4858** | 43.86 % | 4 |
+| `glue_decode` (`decode_motion` + its drain) | **2.0282** | 25.52 % | 16 |
+| `setup` (`constraints_for`'s 0.641 + reset 0.089 + `_new_agent` 0.003) | 0.7823 | 9.84 % | 1 |
+| `collect` (`finish_plan`: `restore_world` + context blend) | 0.3200 | 4.03 % | 1 |
+| `glue_sample` | 0.3076 | 3.87 % | 16 |
+| `glue_pred_local` | 0.2846 | 3.58 % | 16 |
+| `glue_decoder_io` (decoder read-back + re-upload) | 0.2666 | 3.35 % | 16 |
+| `glue_duration` | 0.2184 | 2.75 % | 32 |
+| `forward` + `stack` + `scatter` | 0.0760 | 0.96 % | 4 + 4 + 4 |
+| `glue_upload` | 0.0406 | 0.51 % | 64 |
+| `glue_condition` `glue_normalize` `glue_gather` `glue_dense` | 0.0728 | 0.92 % | 16 each |
+| `schedule` | 0.0015 | 0.02 % | 5 |
+| **segments total** | **7.875** | | |
+| **closure residual** (orchestration + resume + brackets) | **0.073** | 0.92 % | |
+| **measured pass** | **7.948** | 100 % | |
+
+Grouped: **batched forwards 3.547** (`stack` + `forward` + `eval`), **host glue
+3.219**, **setup 0.782**, **collect 0.320**, **orchestration 0.073**.
+
+**The attribution of round 5's 2.29 ms residual.**  The subtraction was
+`1.98 + 3.97 = 5.95` against a measured `8.24`.  The direct instrument replaces both
+terms and adds two the model never had:
+
+| item | round-5 instrument | direct instrument | difference |
+|---|---|---|---|
+| batched forwards | `stage_throughput` 2.21 | `stack`+`forward`+`eval` 3.55 | **+1.33** |
+| host pass | injected rows 3.47 | `glue_*` sum 3.22 | **-0.25** |
+| per-scenario setup | not counted | 0.78 | **+0.78** |
+| agent maths after the transition | not counted | 0.32 | **+0.32** |
+| | | | **+2.18** |
+
+`+1.33 - 0.25 + 0.78 + 0.32 = 2.18`, against the reported `2.29` (the rest is the
+difference between the two runs' measured bases).  The two additions are not
+mysteries: the round-5 model never counted `Agent.constraints_for` or
+`finish_plan`, because one instrument started after the first and the other stopped
+before the second.  The forward term is the honest part of the story:
+`stage_throughput` times a batched forward *alone, in a tight repeat loop, on
+already-materialised inputs*, while the in-situ `mx.eval` also folds in the device
+graphs the generator builds for that forward (`mx.stack` of the predicted root, the
+`mx.array` uploads) -- so the isolated instrument is optimistic by `1.33 ms`, and
+round 4's projection inherited exactly that optimism.
+
+**What the closed table then pointed at.**  The second-largest item was not host
+arithmetic at all: `glue_decode` is `decode_motion`, a *tiny* device graph that the
+accepted path drains **once per scenario**.  Measured on its own, on the same rows:
+
+| B | one drain per scenario | one batched graph | ratio |
+|---|---|---|---|
+| 1 | 2.316 ms/scen | 1.943 | 1.19x |
+| 2 | 2.209 | 1.080 | 2.05x |
+| 4 | 2.446 | 0.553 | 4.42x |
+| 8 | 2.173 | 0.340 | 6.39x |
+| 16 | 2.210 | 0.252 | 8.77x |
+
+and its parts at `B = 16`: graph build **0.397 ms**, drain **1.451 ms** -- against a
+bare `mx.eval(mx.sum(x))` on the same machine of **0.28-0.35 ms**.  The decode is
+therefore launch/drain-bound, not arithmetic-bound, which is why one graph is an
+order of magnitude cheaper than sixteen small ones.  That reframes the "host pass":
+of the 3.22 ms direct host glue, about **2.0 ms was a device drain**, and the host
+*arithmetic* that batching cannot remove is nearer 1.9 ms/scenario than 3.97.
+
+## 46. The change: one batched decode per shape group
+
+`bake_decode_batch` (declared **off**, `nn.OPT_DEFAULTS`) makes the motion decode a
+**fifth forward point** of the step generator:
+
+* `motion_rep.decode_motion_batch` is the batched twin of the accepted
+  `decode_motion`: the same arithmetic with one extra leading dimension, the frame
+  axis moved to axis 1 so the cumulative travel stays *inside* each scenario, and
+  per-scenario `(batch, 1)` origins because a bake's scenarios have their own.
+  `decode_motion` itself is untouched.
+* `MlxPipeline.transition_steps` yields `("decode", args, serial_call)`.  Every
+  caller that does not own the stage -- the accepted `run_transition`, the round-3
+  `pose_logits` seam, the round-4 `StageDriver` -- gets `serial_call`, which is the
+  accepted call with the accepted arguments.
+* only the single-pass orchestrator can own it (`bake.single_pass_stages`), and
+  `batched_stages()` never contains it, so the round-4 arm is byte-for-byte what it
+  was and remains this round's control.
+
+**Bit-identity.**  `compare_bitwise` between the decode-batched single pass and the
+round-4 arm (which runs the serial decode) is `bit_identical=True` at every `B` of
+every campaign run -- tokens, uniforms, duration, roots and rotations, with no
+tolerance -- and `tests/test_mlx_bake.py` pins the same for the batched twin on real
+rows.  This is also why the safety margins are unchanged to the last digit (47).
+
+**Paired before/after** (criteria 43.2 item 4: same process, identical scenario set,
+rotated order, per-repeat ratio), 25 repeats, **one process per `B`**:
+
+| B (homogeneous) | decode off | decode on | paired p50 | IQR | bit-identical |
+|---|---|---|---|---|---|
+| 4 | 12.683 ms/scen | 12.311 | **1.0559x** | 0.935-1.207 | yes |
+| 8 | 9.417 | 8.124 | **1.1726x** | 1.007-1.326 | yes |
+| 16 | 8.136 | 6.677 | **1.2207x** | 1.132-1.335 | yes |
+
+Both arms record their **resolved** switch values, so "the arm took effect" is
+evidence, not an assumption (`arms_effective=True`, and the round-3 lesson about a
+mis-parsed arm is why).
+
+**A measurement-discipline finding, reported because it changed a conclusion.**  The
+first paired run measured `B` = 1/2/4/8/16 *in one process* and gave `B = 8` a ratio
+of **0.936** while `B = 16` gave 1.175.  A standalone measurement of the same item
+(6.39x at eight rows) said that could not be the decode batch, and a profile of both
+arms at `B = 8` agreed (`glue_decode` 1.716 -> 0.554, total 10.33 -> 9.47): the
+long-lived process was carrying state across `B` rows.  Re-measured in a dedicated
+process, `B = 8` is **1.1726x**.  The criteria's "interleaved in one process" is
+necessary but not sufficient; **each `B` gets its own process** in the table above.
+
+**Verdict (43.3).**  Tokens bit-identical over the gate; `mlx_align` does not
+regress; the paired per-scenario improvement is measurable and above 1.05x at
+`B = 8` (1.173) and `B = 16` (1.221) and marginal at `B = 4` (1.056), while `B = 1`
+is neutral (0.993) -- consistent with 0007's "`B = 1` is never used".  The change is
+therefore **adopted on the bake path**, and the release bake configuration is
+`--bake-stages all+decode`.  The declared default stays **off**: the switch has
+meaning only inside the single-pass orchestrator, so leaving it off keeps the
+accepted single-scenario path and the round-3/round-4 bake reproductions exactly as
+they were.
+
+## 47. The re-run campaign, the margins, and the tier under 0008
+
+Re-run from scratch (the bake path changed, so round 5's campaign may not be
+inherited).  GPU, 9 repeats, load 6.7-12.7:
+
+| grouping | B | single p50 | vs serial | perturbation / margin | tier (0008) |
+|---|---|---|---|---|---|
+| mixed | 1 | 27.24 ms | 0.961x | 0.2019 | release |
+| mixed | 2 | 36.16 | 1.643x | 0.4843 | release |
+| mixed | 4 | 94.82 | 1.200x | 0.6849 | release |
+| mixed | 8 | 131.07 | 1.670x | 0.6695 | **release** |
+| mixed | 16 | 167.50 | 2.810x | **1.0426** | draft |
+| homogeneous | 2 | 32.80 | 1.739x | 0.2441 | release |
+| homogeneous | 4 | 43.37 | 2.599x | 0.6031 | release |
+| homogeneous | 8 | 71.36 | 3.165x | 0.5290 | release |
+| homogeneous | 16 | 104.26 | **4.443x** | 0.4089 | **release** |
+
+Every `B` of both campaigns: `tokens 16/16` (or `B/B`), `uniforms` identical,
+duration identical, **0 differing token decisions**, and `bit_identical=True`
+between the two batch arms.  The margins are identical to round 5's to the last
+digit -- the decode batch changes no value, which is the point.
+
+**The tier code now implements decision 0008, not 0007's arithmetic.**  Round 5
+left `bake_tier` on 0007's literal `1 / ratio >= 1.5`, under which mixed `B = 8`
+(0.6695, i.e. 1.494x) is a **draft** -- while 0008 item 1 rules the threshold to be
+`perturbation / margin <= 0.70` and states that mixed `B <= 8` is release.  The
+implementation now matches the ruling (`RELEASE_RATIO = 0.70`,
+`GROUPED_ABOVE_B = 8`, and the grouping leg of the rule), and the manifest records
+`bake_stage_switches` including `bake_decode_batch`.  This is a threshold that was
+already ruled, not a new one.
+
+**Conclusion (unchanged from 0007/0008): release = duration-mixed `B <= 8` and
+duration-homogeneous `B <= 16`; draft = mixed `B >= 16`; `B = 1` never used.**
+`bake_action_bit_identical=False` is recorded honestly on every row: full-stage
+batching still moves the final action, worst roots `2.027e-06 m` (2.0e-03x of the
+`mlx_align` tolerance), rotations `2.753e-05` (1.4e-02x).
+
+Round 5's headline was `3.49-3.72x` for `B = 16` duration-homogeneous; two
+independent runs this round give **4.43x / 4.44x** (144 scenarios/s), and `B = 8`
+homogeneous 3.17-3.39x.  The lever was not the one round 4 predicted (the
+orchestrator was already spent); it was the fifth unbatched stage the attribution
+found.
+
+## 48. Default path, alignment, tests, the 5x6 gate, and load
+
+* **Default path byte-identical.**  `scripts/mlx_plan.py --device gpu --out …` is
+  sha256 `ccda1952c967c8d7e893a795908f7de278f2acda1ce5ba1e1889692a8904a7c5` and
+  `--device cpu` is `262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a`,
+  each `diff -q`-identical to `out/plan-mlx-gpu.json` / `out/plan-mlx.json`.  The
+  decode yield added a generator round-trip to the accepted path; it changed no
+  value.
+* **Alignment does not regress.**  `mlx_align.py plan out/ref/plan-ref.json …` is
+  `ALIGNMENT OK`, worst margin `rotation angle 0.26x` tolerance (the same column and
+  the same floor round 5 reported: 4.3e-02-5.1e-02 deg on a 2.0e-01 deg tolerance).
+  `mlx_align.py trace … --device gpu` and `--device cpu` are both `TRACE OK` with
+  `pose.tokens`, `pose.sampling_uniforms` and `decoder.quantized` at `0.000e+00`.
+* **5 seeds x 6 steps.**  This tree against a worktree of `f699b84` (round 5's
+  final commit): **30/30 steps** identical `pose.tokens`, `pose.sampling_uniforms`
+  and selected duration, **0/2416** token decisions different, and the final action
+  deviation is **exactly `0.000e+00`** on both roots and rotations.
+* **Tests.**  `pytest -q`: **209 passed, 1 skipped** (the round's start was
+  204/1).  The five new tests pin the decode batch's switch, its bit-identity
+  against the serial decode and against the round-4 arm, that a homogeneous batch
+  issues exactly **one** decode graph, and the 0008 tier rule (including the mixed
+  `B = 8` boundary where 0007's arithmetic and 0008's ruling disagree).
+* **Load.**  Every measurement ran on a machine that was **not idle**; the 1-minute
+  load average recorded around the round-6 runs was **5.6-14.8** (the profile runs
+  at the high end, 11.4-14.8).  Absolute values are still inflated by roughly 10 %,
+  and every before/after number above is a paired ratio inside one process.
+
+## 49. Reproduction (round 6)
+
+```
+# the frozen criteria, committed before any measurement or code change
+git show --stat 428af08
+
+# the direct instrument: closed decomposition, decode off and on, B=8 and B=16
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all --bake 16 \
+    --bake-homogeneous --bake-repeats 9 --bake-profile --devices gpu \
+    --json /tmp/r6/profile-b16-off.json
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all+decode --bake 16 \
+    --bake-homogeneous --bake-repeats 15 --bake-profile --devices gpu \
+    --json /tmp/r6/profile-b16-decode.json
+
+# the paired before/after for the decode batch -- one process per B (46)
+for b in 4 8 16; do ./.venv/bin/python scripts/mlx_bench.py --bake $b \
+    --bake-homogeneous --bake-repeats 25 --bake-decode-paired --devices gpu \
+    --json /tmp/r6/paired-b$b.json; done
+
+# the re-run campaign, both groupings, release configuration
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all+decode \
+    --bake 1,2,4,8,16 --bake-single-pass --bake-repeats 9 --devices gpu \
+    --json /tmp/r6/release-mixed.json
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all+decode \
+    --bake 1,2,4,8,16 --bake-homogeneous --bake-single-pass --bake-repeats 9 \
+    --devices gpu --json /tmp/r6/release-homog.json
+
+# the accepted path, both backends, and alignment
+./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/r6/step-gpu.json
+./.venv/bin/python scripts/mlx_plan.py --device cpu --out /tmp/r6/step-cpu.json
+diff -q /tmp/r6/step-gpu.json out/plan-mlx-gpu.json
+diff -q /tmp/r6/step-cpu.json out/plan-mlx.json
+./.venv/bin/python scripts/mlx_align.py plan out/ref/plan-ref.json /tmp/r6/step-gpu.json
+./.venv/bin/python scripts/mlx_align.py trace out/ref/trace/transition-0.json --device gpu
+./.venv/bin/python scripts/mlx_align.py trace out/ref/trace/transition-0.json --device cpu
+
+# the 5 seeds x 6 steps gate against the pre-round-6 tree
+git worktree add /tmp/r6/before f699b84
+./.venv/bin/python /tmp/r5/campaign.py /tmp/r6/before/src /tmp/r6/campaign-before.json
+./.venv/bin/python /tmp/r5/campaign.py "$PWD/src" /tmp/r6/campaign-after.json
+
+./.venv/bin/python -m pytest -q
+```
+
+The closing baseline anyone can reproduce from is **`docs/SUMMARY.md`**; this
+section is its long form.

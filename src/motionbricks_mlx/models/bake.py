@@ -27,11 +27,13 @@ them by token count and runs one batched forward per group.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import mlx.core as mx
 import numpy as np
 
+from . import motion_rep
 from . import nn
 from ..data import agent as A
 from ..data.style import Style
@@ -289,8 +291,17 @@ def compare(reference: list[Run], candidate: list[Run]) -> dict:
 
 STAGE_ORDER = ("probe", "plan", "pose", "decoder")
 
-#: Which of a driver's *stages* owns each of the four forward points.
-REQUEST_STAGE = {"probe": "root", "plan": "root", "pose": "pose", "decoder": "decoder"}
+#: Round 6 adds the motion decode as a fifth forward point of the step generator.
+#: It is **not** part of ``STAGE_ORDER``: it has no ``StageDriver`` method and the
+#: round-4 arm never owns it (``batched_stages()`` cannot contain it), so the
+#: round-3/round-4 bake paths stay exactly as they were.  Only the single-pass
+#: orchestrator can resolve it, and only when ``bake_decode_batch`` is on.
+DECODE_STAGE = "decode"
+
+#: Which of a driver's *stages* owns each forward point.  ``decode`` owns itself,
+#: and no stage set ever contains it unless the round-6 switch asked for it.
+REQUEST_STAGE = {"probe": "root", "plan": "root", "pose": "pose", "decoder": "decoder",
+                 DECODE_STAGE: DECODE_STAGE}
 
 
 def _owns_stage(stages, stage: str) -> bool:
@@ -384,6 +395,19 @@ def batched_stages() -> frozenset[str]:
     if nn._opt("bake_decoder_batch"):
         stages.add("decoder")
     return frozenset(stages)
+
+
+def single_pass_stages(stages) -> frozenset:
+    """The stage set the single-pass orchestrator will own.
+
+    Round 6's ``bake_decode_batch`` adds the motion decode as a fifth forward
+    point.  It is declared off, so without an opt-in this is exactly the set the
+    caller passed -- round 5's behaviour, byte for byte.  The decode is
+    deliberately **not** part of :func:`batched_stages`: the round-4 arm has no
+    ``StageDriver`` for it and must stay as it was.
+    """
+    stages = frozenset(stages)
+    return stages | {DECODE_STAGE} if nn._opt("bake_decode_batch") else stages
 
 
 def _owns(driver: StageDriver, stage: str) -> bool:
@@ -757,6 +781,140 @@ def stage_throughput(pipeline, drivers: list[StageDriver], repeats: int = 5) -> 
 # throughput comparison against round 4 would be measuring two different bakes.
 
 
+# ---------------------------------------------------------------------------
+# Round 6: the direct instrument (report section 43.1)
+# ---------------------------------------------------------------------------
+# Round 5 attributed the single pass by *subtracting* two independently timed
+# instruments (``stage_throughput`` and an injected-row host pass), which left
+# 2.29 ms/scenario of a 8.24 ms pass unexplained -- and section 38 shows what that
+# kind of arithmetic costs when it is used to predict.  This instrument times the
+# pass itself: one bracket per **leaf** segment, no bracket enclosing another, so
+# the segments add up and the closure residual is only the orchestrator's own
+# bookkeeping.  Everything stays off the hot path unless a caller passes a
+# :class:`Profile`.
+
+#: Leaf segments of the direct instrument.  ``glue_*`` are inside the transition
+#: step generator (``models/transition.py``); the rest are the orchestrator's.
+PROFILE_SEGMENTS = (
+    # orchestrator
+    "setup",           # per-scenario agent reset + constraints_for + generator prime
+    "schedule",        # shape grouping and request keying for one stage
+    "stack",           # gathering/concatenating one group's batched inputs
+    "forward",         # the batched forward's Python call (graph build)
+    "eval",            # mx.eval: the device drain
+    "scatter",         # slicing the batched output back into per-scenario rows
+    "collect",         # finish_plan (agent maths) + Run/trace construction
+    # generator host steps
+    "glue_normalize",  # input normalisation and the three masks
+    "glue_duration",   # duration argmax over the allowed tokens
+    "glue_dense",      # dense target + mask for the root planner
+    "glue_pred_local", # predicted local root (host read-back + velocity block)
+    "glue_condition",  # pose conditions and the pose root argument
+    "glue_upload",     # materialising a stage's argument tuple for the device
+    "glue_sample",     # logits reshape, uniforms, Gumbel sampling
+    "glue_gather",     # codebook gather and the decoder's external condition
+    "glue_decoder_io", # the decoder output's host read-back and re-upload
+    "glue_decode",     # decode_motion and the host read-back of its outputs
+)
+
+
+class Profile:
+    """Accumulator for the round-6 direct instrument.
+
+    ``add`` takes the bracket's start timestamp so a segment costs one
+    ``perf_counter`` pair and one dict update; :meth:`summary` turns the totals
+    into per-scenario milliseconds and reports the **closure** against the
+    measured region, so nothing is attributed by subtraction.
+    """
+
+    __slots__ = ("totals", "counts")
+
+    def __init__(self) -> None:
+        self.totals: dict[str, float] = dict.fromkeys(PROFILE_SEGMENTS, 0.0)
+        self.counts: dict[str, int] = dict.fromkeys(PROFILE_SEGMENTS, 0)
+
+    def add(self, name: str, started: float) -> None:
+        self.totals[name] += time.perf_counter() - started
+        self.counts[name] += 1
+
+    def summary(self, measured_total_ms: float, scenarios: int) -> dict:
+        segments = {
+            name: {
+                "total_ms": 1000.0 * seconds,
+                "per_scenario_ms": 1000.0 * seconds / scenarios,
+                "calls": self.counts[name],
+            }
+            for name, seconds in self.totals.items()
+        }
+        closed = sum(item["total_ms"] for item in segments.values())
+        return {
+            "segments": segments,
+            "segments_total_ms": closed,
+            "measured_total_ms": measured_total_ms,
+            "closure_residual_ms": measured_total_ms - closed,
+            "per_scenario_closure_residual_ms": (
+                measured_total_ms - closed) / scenarios,
+        }
+
+
+def _stack_arguments(stage: str, arguments: list) -> list:
+    """Gather one shape group's inputs into the stacked arrays a batched call takes.
+
+    Byte for byte the stacking :func:`_batched_request` always did; split out so
+    the direct instrument can time the gather separately from the call.
+    """
+    if stage == "probe":
+        return [_stack([argument[slot] for argument in arguments]) for slot in range(6)]
+    if stage == "plan":
+        # The request is ``(global, local, poses, global_mask, local_mask,
+        # pose_mask, tokens, dense_target, dense_target_mask)``; the token count is
+        # a trace-time constant and is the *shape key*, never a stacked input --
+        # the same eight arrays ``_resolve`` stacks, in the same order.
+        return [_stack([argument[slot] for argument in arguments])
+                for slot in (0, 1, 2, 3, 4, 5, 7, 8)]
+    if stage == "pose":
+        return [_stack([argument[slot] for argument in arguments]) for slot in range(4)]
+    if stage == DECODE_STAGE:
+        # ``(decoded, mean, std, parents, initial_x, initial_z)``: the statistics
+        # and the parent table are one per bundle, the origins are one per
+        # scenario and must become a ``(batch, 1)`` column so the cumulative
+        # travel stays inside each scenario.
+        origins = np.array([[float(argument[4]), float(argument[5])]
+                            for argument in arguments], dtype=np.float32)
+        return [_stack([argument[0] for argument in arguments]),
+                arguments[0][1], arguments[0][2], arguments[0][3],
+                mx.array(origins[:, 0:1]), mx.array(origins[:, 1:2])]
+    return [_stack([argument[slot] for argument in arguments]) for slot in range(4)]
+
+
+def _call_batched(pipeline, stage: str, stacked: list, key) -> object:
+    """The batched forward for one stacked shape group (the accepted call)."""
+    if stage == "probe":
+        return pipeline.root.duration_logits_batch(*stacked)
+    if stage == "plan":
+        return pipeline.root.plan_values_batch(*stacked, key)
+    if stage == "pose":
+        return pipeline.pose.plan_batch(*stacked, key[0], key[1])
+    if stage == DECODE_STAGE:
+        return motion_rep.decode_motion_batch(*stacked)
+    return pipeline.decoder.decode_batch(*stacked, key)
+
+
+def _evaluate(out) -> None:
+    """Drain a batched forward's output (a tuple when the decode returns two)."""
+    if isinstance(out, tuple):
+        mx.eval(*out)
+    else:
+        mx.eval(out)
+
+
+def _rows_of(out, count: int) -> list:
+    """Slice a batched forward's output back into one row per scenario."""
+    if isinstance(out, tuple):
+        return [tuple(part[row] for part in out) for row in range(count)]
+    return [out[row] for row in range(count)]
+
+
 def _request_key(stage: str, arguments) -> object:
     """The shape key of one forward request: what makes two scenarios share a call.
 
@@ -769,45 +927,46 @@ def _request_key(stage: str, arguments) -> object:
         return int(arguments[6])                     # requested token count
     if stage == "pose":
         return (int(arguments[4]), int(arguments[5]))  # positions, num_tokens
+    if stage == DECODE_STAGE:
+        return int(arguments[0].shape[0])            # frame count of the decoded row
     return int(arguments[4])                         # decoder: positions
 
 
-def _batched_request(pipeline, stage: str, arguments: list, key) -> list:
+def _batched_request(pipeline, stage: str, arguments: list, key,
+                     profile: Profile | None = None) -> list:
     """One batched forward for a shape-homogeneous group of step requests.
 
     Byte for byte the calls :func:`_resolve` makes for the round-4 driver: same
     stacking order, same shape key, same ``mx.eval`` and the same row slicing, so
-    the two arms consume identical rows.
+    the two arms consume identical rows.  With ``profile`` the gather, the call,
+    the drain and the scatter are timed as four separate leaf segments; without it
+    this is the accepted code path.
     """
-    if stage == "probe":
-        stacked = [_stack([argument[slot] for argument in arguments])
-                   for slot in range(6)]
-        out = pipeline.root.duration_logits_batch(*stacked)
-    elif stage == "plan":
-        # The request is ``(global, local, poses, global_mask, local_mask,
-        # pose_mask, tokens, dense_target, dense_target_mask)``; the token count is
-        # a trace-time constant and is the *shape key*, never a stacked input --
-        # the same eight arrays ``_resolve`` stacks, in the same order.
-        stacked = [_stack([argument[slot] for argument in arguments])
-                   for slot in (0, 1, 2, 3, 4, 5, 7, 8)]
-        out = pipeline.root.plan_values_batch(*stacked, key)
-    elif stage == "pose":
-        stacked = [_stack([argument[slot] for argument in arguments])
-                   for slot in range(4)]
-        out = pipeline.pose.plan_batch(*stacked, key[0], key[1])
-    else:
-        stacked = [_stack([argument[slot] for argument in arguments])
-                   for slot in range(4)]
-        out = pipeline.decoder.decode_batch(*stacked, key)
-    mx.eval(out)
-    return [out[row] for row in range(len(arguments))]
+    if profile is None:
+        out = _call_batched(pipeline, stage, _stack_arguments(stage, arguments), key)
+        _evaluate(out)
+        return _rows_of(out, len(arguments))
+
+    started = time.perf_counter()
+    stacked = _stack_arguments(stage, arguments)
+    profile.add("stack", started)
+    started = time.perf_counter()
+    out = _call_batched(pipeline, stage, stacked, key)
+    profile.add("forward", started)
+    started = time.perf_counter()
+    _evaluate(out)
+    profile.add("eval", started)
+    started = time.perf_counter()
+    rows = _rows_of(out, len(arguments))
+    profile.add("scatter", started)
+    return rows
 
 
 class _SinglePassSession:
     """One scenario's transition generator plus the agent state that finishes it."""
 
     def __init__(self, pipeline, bundle, scenario: Scenario, stages: frozenset,
-                 capture_trace: bool) -> None:
+                 capture_trace: bool, profile: Profile | None = None) -> None:
         self.scenario = scenario
         self.command = scenario.command()
         self.stages = stages
@@ -817,12 +976,26 @@ class _SinglePassSession:
         # by ``Agent.finish_plan`` with the boundary set this pass actually used.
         self.frame, self.constraints = self.agent.constraints_for(
             self.command, scenario.style)
-        self.steps = pipeline.transition_steps(
-            self.constraints, self.command.seed, self.command.sampling_argmax,
-            capture_trace)
-        self.request = next(self.steps)
+        self._pipeline = pipeline
+        self._capture_trace = capture_trace
+        self._profile = profile
+        self.steps = None
+        self.request = None
         self.rows: dict[str, object] = {}
         self.result = None
+
+    def start(self) -> None:
+        """Create the step generator and run it to its first forward request.
+
+        Kept out of ``__init__`` so the direct instrument's ``setup`` bracket (agent
+        reset + ``constraints_for``) does not enclose the generator's first host
+        steps: those are bracketed inside the generator as ``glue_*``, and a
+        bracket may not contain another one.
+        """
+        self.steps = self._pipeline.transition_steps(
+            self.constraints, self.command.seed, self.command.sampling_argmax,
+            self._capture_trace, self._profile)
+        self.request = next(self.steps)
 
     def send(self, value) -> None:
         """Feed one forward's output back; ``None`` request means finished."""
@@ -832,15 +1005,24 @@ class _SinglePassSession:
             self.result = stop.value
             self.request = None
 
-    def advance(self):
+    def advance(self, profile: Profile | None = None):
         """Run every host step and every forward this orchestrator does not own.
 
         Stops on the first request for a stage the orchestrator owns (or when the
         transition is finished), which is the whole point: the steps that ran are
-        kept in the generator's frame, never re-executed.
+        kept in the generator's frame, never re-executed.  ``profile`` only adds a
+        bracket around the accepted forward of an *unowned* stage; the host steps
+        themselves are bracketed inside the generator, which is why this does not
+        time them a second time.
         """
         while self.request is not None and not _owns_stage(self.stages, self.request[0]):
-            self.send(self.request[2]())               # the accepted forward
+            if profile is None:
+                self.send(self.request[2]())               # the accepted forward
+            else:
+                started = time.perf_counter()
+                value = self.request[2]()
+                profile.add("forward", started)
+                self.send(value)
         return self.request
 
 
@@ -852,7 +1034,8 @@ def _session_row(session: _SinglePassSession, stage: str) -> np.ndarray:
 
 def drive_batch_single_pass(pipeline, bundle, scenarios: list[Scenario],
                             stages, capture_trace: bool = True,
-                            inject: dict[str, list] | None = None) -> BatchResult:
+                            inject: dict[str, list] | None = None,
+                            profile: Profile | None = None) -> BatchResult:
     """Plan every scenario of one batch in **one pass** of the transition.
 
     Each scenario owns one step generator (:meth:`MlxPipeline.transition_steps`)
@@ -866,37 +1049,62 @@ def drive_batch_single_pass(pipeline, bundle, scenarios: list[Scenario],
     without any neural work: the host steps still run, in the same order, and the
     rows they would have consumed are handed straight back.
 
+    ``profile`` (round 6) turns on the direct instrument: every leaf segment is
+    bracketed and accumulated into the passed :class:`Profile`, and the caller
+    reports the closure against the region it timed.  ``None`` (the default) is
+    the accepted code path.
+
+    The round-6 switch ``bake_decode_batch`` adds the motion decode as a fifth
+    forward point this orchestrator owns.  It is declared off, so the four-stage
+    orchestrator of round 5 is what runs unless a caller opts in; when it is on,
+    the decode of each shape group is issued as **one** batched graph, which is
+    what turns the per-scenario decode drain into a single one.
+
     The returned :class:`BatchResult` carries the same :class:`Run` per scenario
     as :func:`drive_batch`, so the campaign comparison code is shared; ``drivers``
     is empty because this arm has no ``StageDriver`` and never suspends.
     """
-    stages = frozenset(stages)
-    sessions = [_SinglePassSession(pipeline, bundle, scenario, stages, capture_trace)
+    stages = single_pass_stages(stages)
+    order = STAGE_ORDER + ((DECODE_STAGE,) if DECODE_STAGE in stages else ())
+    if profile is not None:
+        started = time.perf_counter()
+    sessions = [_SinglePassSession(pipeline, bundle, scenario, stages, capture_trace,
+                                   profile)
                 for scenario in scenarios]
+    if profile is not None:
+        profile.add("setup", started)
     for session in sessions:
-        session.advance()
+        session.start()
+    for session in sessions:
+        session.advance(profile)
 
     pending = [index for index, session in enumerate(sessions)
                if session.request is not None]
     rounds = 0
     while pending:
         rounds += 1
-        if rounds > 4 * len(scenarios) + 8:               # pragma: no cover - defensive
+        if rounds > (len(order) + 1) * len(scenarios) + 8:  # pragma: no cover - defensive
             raise RuntimeError("single-pass orchestrator made no progress")
-        for stage in STAGE_ORDER:
+        for stage in order:
+            if profile is not None:
+                started = time.perf_counter()
             waiting = [index for index in pending
                        if sessions[index].request is not None
                        and sessions[index].request[0] == stage]
             if not waiting:
+                if profile is not None:
+                    profile.add("schedule", started)
                 continue
             grouped: dict[object, list[int]] = {}
             for index in waiting:
                 grouped.setdefault(
                     _request_key(stage, sessions[index].request[1]), []).append(index)
+            if profile is not None:
+                profile.add("schedule", started)
             for key, indices in grouped.items():
                 arguments = [sessions[index].request[1] for index in indices]
                 if inject is None:
-                    rows = _batched_request(pipeline, stage, arguments, key)
+                    rows = _batched_request(pipeline, stage, arguments, key, profile)
                 else:
                     rows = [inject[stage][index] for index in indices]
                 for row, index in zip(rows, indices):
@@ -905,9 +1113,15 @@ def drive_batch_single_pass(pipeline, bundle, scenarios: list[Scenario],
                     # a batched probe has no boundary pair, exactly as the round-4
                     # driver behaved (``MlxPipeline._stage_forward``).
                     sessions[index].send((row, None) if stage == "probe" else row)
-                    sessions[index].advance()
+                    sessions[index].advance(profile)
+        if profile is not None:
+            started = time.perf_counter()
         pending = [index for index in pending if sessions[index].request is not None]
+        if profile is not None:
+            profile.add("schedule", started)
 
+    if profile is not None:
+        started = time.perf_counter()
     runs: list[Run] = []
     for session in sessions:
         motion, info = session.agent.finish_plan(session.result, session.frame,
@@ -920,13 +1134,15 @@ def drive_batch_single_pass(pipeline, bundle, scenarios: list[Scenario],
             motion.roots.copy(), motion.rotations_xyzw.copy(),
             _session_row(session, "probe"), _session_row(session, "plan"),
             _session_row(session, "pose"), _session_row(session, "decoder")))
+    if profile is not None:
+        profile.add("collect", started)
     return BatchResult(
         [scenario.label for scenario in scenarios], runs, [], 0,
         {name: sum(1 for session in sessions if _owns_stage(session.stages, name))
          for name in STAGE_ORDER},
         [session.agent for session in sessions],
         {name: [session.rows.get(name) for session in sessions]
-         for name in STAGE_ORDER})
+         for name in order})
 
 
 def host_pass_timing_single_pass(pipeline, bundle, scenarios: list[Scenario],
@@ -1023,25 +1239,50 @@ BAKE_MANIFEST_FIELDS = (
     "bake_action_bit_identical",
 )
 
-#: Decision ``0007``: a release bake needs at least this much headroom between
-#: the worst perturbation and the tightest discrete decision margin.
+#: Decision ``0007``'s original headroom heuristic, kept only so the report and
+#: the manifest can show what the stricter arithmetic would have said.  Decision
+#: ``0008`` replaced it with the mechanically decidable ``RELEASE_RATIO`` below.
 RELEASE_MARGIN = 1.5
+
+#: Decision ``0008`` item 1: a release bake needs
+#: ``perturbation / tightest decision margin <= RELEASE_RATIO``, i.e. at least
+#: ``1 / 0.70 = 1.43x`` headroom.  0008 chose 0.70 over 0007's literal ``1/1.5``
+#: (= 0.6667) because the measured safety boundary sits between mixed ``B = 8``
+#: (0.6695, finite margin) and mixed ``B = 16`` (1.0426, none), and because 1.5
+#: was an integer heuristic rather than a measured cliff.
+RELEASE_RATIO = 0.70
+
+#: Decision ``0008`` item 3: above this ``B`` the batch must be
+#: duration-homogeneous, because the mixed group has no headroom at ``B = 16``.
+GROUPED_ABOVE_B = 8
 
 
 def bake_tier(pose_ratio: float | None, campaign_ok: bool,
-              margin: float = RELEASE_MARGIN) -> str:
-    """``reproducible`` or ``draft`` for one ``B`` (decision 0007).
+              ratio: float = RELEASE_RATIO,
+              grouping: str = "duration-mixed",
+              batch_size: int = 0) -> str:
+    """``reproducible`` or ``draft`` for one ``B`` (decisions 0007 and 0008).
 
-    ``reproducible`` requires **both** halves of the rule: the campaign passed
-    (every scenario still matches the same scenario run alone on the discrete
-    outputs) **and** the safety ratio leaves ``margin``-times headroom, i.e.
-    ``1 / ratio >= margin``.  Passing the campaign alone is not enough -- that is
-    exactly the case round 4 found at ``B = 16``, where the campaign passed with
-    no margin left.
+    ``reproducible`` requires **all three** of:
+
+    * the campaign passed -- every scenario still matches the same scenario run
+      alone on the discrete outputs (0006/0007);
+    * ``pose_ratio <= ratio`` -- 0008's mechanically decidable form of 0007's
+      "margin" rule.  Passing the campaign alone is not enough: round 4's mixed
+      ``B = 16`` passed it with no margin left (1.0426);
+    * ``batch_size <= GROUPED_ABOVE_B`` **or** the grouping is
+      duration-homogeneous (0008 item 3).
+
+    ``ratio`` is exposed so the report can show the 0007 arithmetic beside 0008's
+    without a second implementation.
     """
-    if campaign_ok and pose_ratio is not None and pose_ratio > 0.0:
-        return "reproducible" if (1.0 / pose_ratio) >= margin else "draft"
-    return "draft"
+    if not campaign_ok or pose_ratio is None or pose_ratio <= 0.0:
+        return "draft"
+    if pose_ratio > ratio:
+        return "draft"
+    if batch_size > GROUPED_ABOVE_B and grouping != "duration-homogeneous":
+        return "draft"
+    return "reproducible"
 
 
 def manifest_fields(*, batch_size: int, stages, grouping: str, token_groups: dict,
@@ -1052,7 +1293,8 @@ def manifest_fields(*, batch_size: int, stages, grouping: str, token_groups: dic
     ``safety`` is :func:`safety_factor`'s.  ``bake_action_bit_identical`` is
     derived, never asserted: full-stage batching does not reproduce the final
     action bit for bit, and the field is what lets a reviewer see that instead of
-    having to trust a tolerance.
+    having to trust a tolerance.  The tier is :func:`bake_tier` under decision
+    ``0008`` (threshold **and** the grouping rule).
     """
     stages = frozenset(stages)
     campaign_ok = (comparison["token_identical"] == comparison["scenarios"]
@@ -1060,11 +1302,13 @@ def manifest_fields(*, batch_size: int, stages, grouping: str, token_groups: dic
                    and comparison["selected_identical"] == comparison["scenarios"])
     return {
         "batch_size": int(batch_size),
-        "bake_tier": bake_tier(safety.get("pose_ratio"), campaign_ok),
+        "bake_tier": bake_tier(safety.get("pose_ratio"), campaign_ok,
+                               grouping=grouping, batch_size=int(batch_size)),
         "bake_stages": sorted(stages),
         "bake_stage_switches": [name for name, stage in
                                 (("bake_root_batch", "root"),
-                                 ("bake_decoder_batch", "decoder"))
+                                 ("bake_decoder_batch", "decoder"),
+                                 ("bake_decode_batch", DECODE_STAGE))
                                 if stage in stages],
         "bake_grouping": {"mode": grouping, "token_groups": dict(token_groups)},
         "bake_campaign_scenarios": comparison["scenarios"],

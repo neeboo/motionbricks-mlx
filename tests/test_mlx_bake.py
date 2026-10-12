@@ -560,3 +560,178 @@ def test_single_pass_subset_stage_set(monkeypatch):
     assert len(calls) == len(batch)
     assert single.stage_sizes == {"probe": len(batch), "plan": len(batch),
                                   "pose": len(batch), "decoder": 0}
+
+
+# ---------------------------------------------------------------------------
+# Round 6: the decode as a fifth forward point (report section 43.1)
+# ---------------------------------------------------------------------------
+
+ROUND6_OPT = "bake_root_batch=1,bake_decoder_batch=1,bake_decode_batch=1"
+
+
+def test_decode_batch_switch_is_declared_off_and_never_a_round4_stage(monkeypatch):
+    """The switch is off by default, and the round-4 driver can never own it.
+
+    ``batched_stages()`` is what ``StageDriver`` is built from, so if the decode
+    ever appeared there the round-4 arm would be asked for a forward it has no
+    method for -- and, worse, the round-3/round-4 bake numbers would stop being
+    reproducible from the same switches.
+    """
+    monkeypatch.delenv("MOTIONBRICKS_MLX_OPT", raising=False)
+    assert nn.OPT_DEFAULTS["bake_decode_batch"] is False
+    assert nn._opt("bake_decode_batch") is False
+    assert bake.DECODE_STAGE not in bake.batched_stages()
+    assert bake.single_pass_stages(frozenset({"pose", "root", "decoder"})) == \
+        frozenset({"pose", "root", "decoder"})
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND6_OPT)
+    assert nn._opt("bake_decode_batch") is True
+    # Even switched on, the round-4 stage set never gains the decode...
+    assert bake.DECODE_STAGE not in bake.batched_stages()
+    # ...and only the single-pass orchestrator's set does.
+    assert bake.single_pass_stages(bake.batched_stages()) == \
+        frozenset({"pose", "root", "decoder", "decode"})
+
+
+@NEEDS
+def test_batched_decode_is_bit_identical_to_the_serial_decode(monkeypatch):
+    """The batched decode is a *batch*, not a different computation.
+
+    The standalone instrument (report section 45) says one batched decode graph is
+    an order of magnitude cheaper than ``B`` small ones; this pins that it is also
+    exact, on real decoder rows, array for array and with no tolerance.
+    """
+    from motionbricks_mlx.models import motion_rep
+
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND6_OPT)
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(4)
+    campaign = bake.drive_batch_single_pass(pipeline, bundle, batch,
+                                            bake.batched_stages(), capture_trace=True)
+    rows = [mx.array(np.asarray(row, np.float32)) for row in campaign.rows["decoder"]]
+    # The orchestrator groups a decode batch by frame count, so the comparison
+    # must too: a duration-mixed batch has more than one group, and that
+    # fragmentation is part of what the campaign measures.
+    groups: dict[int, list[int]] = {}
+    for index, row in enumerate(rows):
+        groups.setdefault(int(row.shape[0]), []).append(index)
+    assert sum(len(indices) for indices in groups.values()) == len(rows)
+    for indices in groups.values():
+        stacked = mx.stack([rows[index] for index in indices], axis=0)
+        origins = mx.array(np.zeros((len(indices), 1), np.float32))
+        roots_b, rotations_b = motion_rep.decode_motion_batch(
+            stacked, pipeline.mean, pipeline.std, pipeline.parents, origins, origins)
+        mx.eval(roots_b, rotations_b)
+        for position, index in enumerate(indices):
+            roots_s, rotations_s = motion_rep.decode_motion(
+                rows[index], pipeline.mean, pipeline.std, pipeline.parents, 0.0, 0.0)
+            mx.eval(roots_s, rotations_s)
+            assert np.array_equal(np.asarray(roots_b)[position], np.asarray(roots_s))
+            assert np.array_equal(np.asarray(rotations_b)[position],
+                                  np.asarray(rotations_s))
+    bundle.release()
+
+
+@NEEDS
+def test_single_pass_decode_batch_matches_the_round4_arm_bit_for_bit(monkeypatch):
+    """The round-5 instrument check, now against a batched *decode*.
+
+    The round-4 arm runs the accepted per-scenario decode; the single-pass arm
+    runs one batched decode per shape group.  Everything the campaign compares --
+    tokens, uniforms, duration, roots, rotations -- must be exactly equal, with no
+    tolerance, or the throughput gain is not the same bake.
+    """
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND6_OPT)
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(4)
+    stages = bake.batched_stages()
+    reference, _ = bake.record_serial(pipeline, bundle, batch, capture_stages=True)
+    round4 = bake.drive_batch(pipeline, bundle, batch, stages)
+    single = bake.drive_batch_single_pass(pipeline, bundle, batch, stages)
+    cross = bake.compare_bitwise(round4.runs, single.runs)
+    assert cross["bit_identical"], cross["rows"]
+    comparison = bake.compare([record.run for record in reference], single.runs)
+    assert comparison["token_identical"] == len(batch)
+    assert comparison["differing_tokens"] == 0
+    bundle.release()
+
+
+@NEEDS
+def test_single_pass_decode_batch_issues_one_decode_graph_per_group(monkeypatch):
+    """One batched decode per shape group, and no per-scenario decode at all.
+
+    A duration-homogeneous batch is one group, so the whole batch is one decode
+    graph; the accepted ``decode_motion`` must not be called by the orchestrator.
+    """
+    from motionbricks_mlx.models import motion_rep
+
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND6_OPT)
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    walk = load_style(STYLES_DIR / "walk.mbstyle")
+    batch = [bake.Scenario(label=f"h{index}-walk", style=walk, seed=5 + index,
+                           movement=(0.2, 0.0, 0.0)) for index in range(3)]
+    stages = bake.batched_stages()
+    counts = {"batched": 0, "serial": 0}
+    originals = (motion_rep.decode_motion_batch, motion_rep.decode_motion)
+
+    def batched_spy(*args, **kwargs):
+        counts["batched"] += 1
+        return originals[0](*args, **kwargs)
+
+    def serial_spy(*args, **kwargs):
+        counts["serial"] += 1
+        return originals[1](*args, **kwargs)
+
+    motion_rep.decode_motion_batch = batched_spy
+    motion_rep.decode_motion = serial_spy
+    try:
+        single = bake.drive_batch_single_pass(pipeline, bundle, batch, stages)
+    finally:
+        (motion_rep.decode_motion_batch, motion_rep.decode_motion) = originals
+    assert len(single.runs) == len(batch)
+    assert counts["batched"] == 1, counts
+    assert counts["serial"] == 0, counts
+    bundle.release()
+
+
+def test_manifest_tier_follows_decision_0008_threshold_and_grouping():
+    """The tier is 0008's mechanical rule, not 0007's literal 1/1.5 arithmetic.
+
+    Mixed ``B = 8`` measures 0.6695, which **fails** 0007's literal
+    ``1/ratio >= 1.5`` (1.494) but passes 0008's ``ratio <= 0.70``; 0008 rules that
+    the measured boundary -- not the integer heuristic -- is the threshold.  The
+    grouping rule is the third leg: above ``B = 8`` a mixed batch is a draft even
+    when its ratio is comfortable, because that is the configuration whose margin
+    collapsed at ``B = 16``.
+    """
+    comparison = {"scenarios": 8, "token_identical": 8, "uniform_identical": 8,
+                  "selected_identical": 8, "differing_tokens": 0,
+                  "total_tokens": 536, "worst_roots_m": 1.267e-06,
+                  "worst_rotations": 8.076e-06, "worst_angle_deg": 0.0626}
+    stages = {"root", "pose", "decoder", "decode"}
+
+    def fields(batch_size, grouping, ratio):
+        return bake.manifest_fields(
+            batch_size=batch_size, stages=stages, grouping=grouping,
+            token_groups={"11": batch_size}, comparison=comparison,
+            safety={"pose_ratio": ratio, "pose_margin": 2.985e-03})
+
+    # 0007's stricter arithmetic would have called this draft; 0008 calls it release.
+    assert 1.0 / 0.6695 < bake.RELEASE_MARGIN                 # 1.494 < 1.5
+    assert 0.6695 <= bake.RELEASE_RATIO                       # 0.6695 <= 0.70
+    assert fields(8, "duration-mixed", 0.6695)["bake_tier"] == "reproducible"
+    assert fields(8, "duration-mixed", 0.6695)["bake_stage_switches"] == [
+        "bake_root_batch", "bake_decoder_batch", "bake_decode_batch"]
+    # Zero headroom is a draft whatever the grouping.
+    assert fields(16, "duration-homogeneous", 1.0426)["bake_tier"] == "draft"
+    # Homogeneous B=16 has headroom and is release; the same ratio mixed is not.
+    assert fields(16, "duration-homogeneous", 0.4089)["bake_tier"] == "reproducible"
+    assert fields(16, "duration-mixed", 0.4089)["bake_tier"] == "draft"
+    # A failed campaign is never release.
+    failed = dict(comparison, token_identical=7)
+    assert bake.manifest_fields(
+        batch_size=4, stages=stages, grouping="duration-mixed",
+        token_groups={"11": 4}, comparison=failed,
+        safety={"pose_ratio": 0.2, "pose_margin": 1.0})["bake_tier"] == "draft"

@@ -394,3 +394,61 @@ manifest 助手）、`src/motionbricks_mlx/data/agent.py`（抽出 `finish_plan`
 `scripts/eval_*.py`、`tests/test_eval_*.py`、`motion-representation.md`、`README.md`、`NOTICE`、
 `LICENSE`、`pyproject.toml` 未动；参考仓库只读；`mlx_plan.py`/`mlx_align.py` 语义未改；
 所有 `mlx_plan.py` 调用都显式带 `--out`；**无 push**。
+
+---
+
+# Round 6（A 侧）：把 2.29 ms 归因掉，然后批量化解码 —— 收尾基线
+
+**先钉判据再动手**：`docs/optimization-report.md` 第 43 节（commit `428af08`，本轮第一个 commit，
+事后未改；`git diff --numstat 428af08 -- docs/optimization-report.md` 只见 `+`）。
+
+**① 任务一：直接仪器，先归因、不许相减。** 第 5 轮的 2.29 与 round-4 的 3.95 都是两个仪器相减来的，
+本轮改成在每个**叶子段**外侧加 `perf_counter` 括号（`bake.Profile`）：编排器的 setup/schedule/stack/
+forward/eval/scatter/collect ＋ 生成器里的 10 个 `glue_*` 宿主步骤，**括号不嵌套、不跨 `yield`**，
+各段之和与实际区间闭合。第一版闭合到 3.83 %，两个错误都是闭合数抓出来的：
+① `setup` 把 `next(self.steps)` 也括了进去，而生成器首段胶水自己也有括号 → 重复计数（改为 `start()`
+单独 prime）；② 探针自身的 drain（`np.asarray(mx.duration_logits)`）落在 resume 之后、括号之外 →
+把最大的一处漏账（0.38 ms/场景 × 16）摆在了括号外。修好后闭合 **0.92–0.94 %**。
+仪器是**惰性**的：每次 profile 都跑一遍 profiled vs unprofiled 的 `compare_bitwise`（token/uniforms/
+duration/roots/rotations，无容差），全部 `inert=True`；交错测量仪器自身代价 −1.8 %～+2 %。
+
+**② 归因结果（B=16 同构，9–15 重复，load 11.4–14.8，7.948 ms/场景）**：`eval` 3.4858（43.9 %）、
+**`glue_decode` 2.0282（25.5 %）**、`setup` 0.7823（9.8 %）、`collect` 0.3200（4.0 %）、
+其余宿主胶水 1.331、编排+resume 0.073（0.9 %）。
+**2.29 的来历**：前向仪器乐观 +1.33（`stage_throughput` 在紧循环里单测前向，而现场的 `mx.eval`
+还折进了生成器为它建的设备图）、注入式宿主仪器悲观 −0.25、另有 **+0.78（`constraints_for`）
+与 +0.32（`finish_plan`）是两件仪器都没数过的项** —— 合计 +2.18，对上报告的 2.29。
+
+**③ 任务二：按判据改。** 归因显示第二大项不是宿主算术，而是**每场景 drain 一次的解码小图**：
+建图 0.397 + drain 1.451 ms，而裸 `mx.eval(sum)` 只要 0.28–0.35 ms。于是新增**默认关闭**的
+`bake_decode_batch`：把解码变成 step generator 的**第五个前向点**（`decode_motion_batch`，批量孪生体，
+帧轴在轴 1、每场景各自的 `(batch,1)` 原点），由单趟编排器按形状分组、每组一次图。
+**它不能被 round-4 臂拥有**（`batched_stages()` 不含它）→ round-3/4 路径与默认单场景路径一字未动。
+配对前后（每 B 一个进程，25 重复，顺序轮换）：**B=4 1.0559× [0.935–1.207]、B=8 1.1726× [1.007–1.326]、
+B=16 1.2207× [1.132–1.335]**，B=1 0.9925×（中性，与"B=1 永不使用"一致）；两臂 `compare_bitwise`
+**逐位相同**。端到端：同构 B=16 **3.49–3.72× → 4.43–4.44×**（144–153 场景/秒），B=8 3.17–3.39×，
+混合 B=16 2.81–2.95×。**方法学发现**：把 B=1/2/4/8/16 放同一个进程配对时 B=8 量出 0.936×，
+独立进程重测是 1.1726× —— 长命进程跨 B 积累状态，配对必须每 B 一个进程。
+
+**④ 档位（重跑战役后）**：裕度与第 5 轮**逐位相同**（批量解码不改数值）：混合 0.2019/0.4843/0.6849/
+0.6695/1.0426，同构 0.2019/0.2441/0.6031/0.5290/0.4089，最紧余量 2.985e-03。
+**结论不变：release = 混合 B ≤ 8 / 时长同构 B ≤ 16；draft = 混合 B ≥ 16；B=1 永不使用。**
+同时把 `bake_tier` 从 0007 的字面 `1/ratio ≥ 1.5` 改成 **0008 已裁定的机械规则**
+（`RELEASE_RATIO=0.70`、`GROUPED_ABOVE_B=8`、分组腿）——差别恰好落在边界上：混合 B=8 的 0.6695
+（1.494×）在 0007 算术下是 draft、在 0008 下是 release。manifest 记录 `bake_decode_batch`。
+
+**⑤ 默认路径与门禁**：GPU 文档 `ccda1952…` == `out/plan-mlx-gpu.json`、CPU 文档 `262e77d4…` ==
+`out/plan-mlx.json`，逐字节一致；`mlx_align plan` `ALIGNMENT OK`（最差余量 rotation angle 0.26× 容差）、
+`trace` 两后端 `TRACE OK`（tokens/uniforms/quantized 全 `0.000e+00`）；**5 seed × 6 步**跨版对照
+（`f699b84` 工作树 vs 本树）：tokens/uniforms/duration **30/30**、**0/2416** 决策不同、
+最终动作偏差**恰好 0.000e+00**；`pytest` **209 passed / 1 skipped**（起点 204/1，只增不减）；
+默认路径 GPU p50 **26.6 ms**、CPU **173.1 ms**（冷启动 317/497 ms，MLX 峰值 779/748 MB，分开进程量）。
+**成品是 `docs/SUMMARY.md`**（收尾基线全文），提案 `docs/decisions/0009-batch-the-motion-decode.md`。
+
+**红线遵守**：只改 `src/motionbricks_mlx/models/{bake,transition,motion_rep,nn}.py`、
+`scripts/mlx_bench.py`（追加 `--bake-profile` / `--bake-decode-paired` / `--bake-stages all+decode`，
+既有语义不变）、`tests/test_mlx_{bake,optimizations}.py`、`docs/optimization-report.md`（追加第 43–49 节）、
+本文件、新增 `docs/SUMMARY.md` 与 `docs/decisions/0009-...md`；`training/**`、`train_*.py`、`eval/**`、
+`scripts/eval_*.py`、`tests/test_eval_*.py`、`motion-representation.md`、`README.md`、`NOTICE`、
+`LICENSE`、`pyproject.toml` 未动；参考仓库只读；`mlx_plan.py`/`mlx_align.py` 语义未改；
+所有 `mlx_plan.py` 调用都显式带 `--out`；**无 push**。

@@ -372,7 +372,7 @@ def main() -> int:
     parser.add_argument("--bake-metrics", action="store_true",
                         help="with --bake-stages pose, also report the round-4 "
                              "perturbation/margin safety numbers")
-    parser.add_argument("--bake-stages", choices=("pose", "root", "all"),
+    parser.add_argument("--bake-stages", choices=("pose", "root", "all", "all+decode"),
                         default="pose",
                         help="which stages the bake batches: 'pose' is the "
                              "round-3 bake, 'root' adds the root stage, 'all' "
@@ -383,6 +383,16 @@ def main() -> int:
                              "round-4 drive_batch and the round-5 single-pass "
                              "orchestrator -- and pin that the two batch arms "
                              "agree bit for bit")
+    parser.add_argument("--bake-decode-paired", action="store_true",
+                        help="round 6: with --bake, run the single pass with and "
+                             "without the decode batch switch, interleaved in one "
+                             "process, and report the paired ratio and the bitwise "
+                             "comparison of the two arms")
+    parser.add_argument("--bake-profile", action="store_true",
+                        help="round 6: with --bake, attribute the single pass with "
+                             "the direct instrument (one perf_counter bracket per "
+                             "leaf segment) and report the closure against the "
+                             "region timed; also pins that profiling is inert")
     args = parser.parse_args()
 
     if not (args.bundle / "manifest.json").is_file():
@@ -397,7 +407,16 @@ def main() -> int:
             device = device.strip()
             if not device:
                 continue
-            if args.bake_single_pass:
+            if args.bake_decode_paired:
+                report = bake_decode_paired_measure(device, args.styles, args.bundle,
+                                                    sizes, args.seed,
+                                                    args.bake_repeats,
+                                                    homogeneous=args.bake_homogeneous)
+            elif args.bake_profile:
+                report = bake_profile_measure(device, args.styles, args.bundle,
+                                              sizes, args.seed, args.bake_repeats,
+                                              homogeneous=args.bake_homogeneous)
+            elif args.bake_single_pass:
                 report = bake_single_pass_measure(device, args.styles, args.bundle,
                                                   sizes, args.seed, args.bake_repeats,
                                                   homogeneous=args.bake_homogeneous)
@@ -478,6 +497,9 @@ BAKE_STAGE_SWITCHES = {
     "pose": "",
     "root": "bake_root_batch=1",
     "all": "bake_root_batch=1,bake_decoder_batch=1",
+    # Round 6: everything round 4 batches, plus the motion decode (a single-pass
+    # orchestrator stage only -- the round-4 arm cannot own it).
+    "all+decode": "bake_root_batch=1,bake_decoder_batch=1,bake_decode_batch=1",
 }
 
 
@@ -767,7 +789,7 @@ def bake_single_pass_measure(device: str, styles_dir: Path, bundle_path: Path,
                 "host_pass_totals_ms": host5["totals_ms"],
             }
         entry["manifest"] = bake_module.manifest_fields(
-            batch_size=size, stages=stages,
+            batch_size=size, stages=bake_module.single_pass_stages(stages),
             grouping="duration-homogeneous" if homogeneous else "duration-mixed",
             token_groups=groups, comparison=comparison, safety=entry["safety"])
         report["batches"][str(size)] = entry
@@ -818,6 +840,322 @@ def bake_single_pass_measure(device: str, styles_dir: Path, bundle_path: Path,
                   f"batched {row['batched_p50_ms']:8.3f} ms   "
                   f"per-scenario {row['per_scenario_ms']:6.3f} ms   "
                   f"speedup {row['speedup']:5.2f}x")
+    bundle.release()
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Round 6: the direct instrument (appended; round 4 and round 5 paths untouched)
+# ---------------------------------------------------------------------------
+
+#: The direct instrument's segments, grouped for the report table.  Every
+#: ``glue_*`` segment runs inside the transition step generator and is *host* work
+#: that batching cannot remove; the rest is the orchestrator's own machinery.
+PROFILE_HOST_SEGMENTS = (
+    "glue_normalize", "glue_duration", "glue_dense", "glue_pred_local",
+    "glue_condition", "glue_upload", "glue_sample", "glue_gather",
+    "glue_decoder_io", "glue_decode",
+)
+PROFILE_ORCHESTRATOR_SEGMENTS = (
+    "setup", "schedule", "stack", "forward", "eval", "scatter", "collect",
+)
+
+
+def bake_profile_measure(device: str, styles_dir: Path, bundle_path: Path,
+                         batch_sizes, seed: int, repeats: int,
+                         homogeneous: bool = True) -> dict:
+    """Attribute the single pass with the **direct** instrument (report 43.1).
+
+    Round 5's decomposition subtracted two independently timed instruments and
+    left 2.29 ms/scenario unexplained.  This pass brackets every leaf segment of
+    the pass itself, accumulates them per batch, and reports the **closure**
+    (``sum(segments)`` against the region the caller timed) so nothing is
+    attributed by subtraction.
+
+    The plain and profiled arms are interleaved inside one process with the order
+    rotated, so the instrument's own cost is a paired number rather than a claim.
+    The rows of the two arms are compared bit for bit when the trace is captured:
+    a profiled run that computes something else is not a measurement.
+    """
+    import statistics as _statistics
+    import time as _time
+
+    from motionbricks_mlx.models import bake as bake_module
+
+    stages = bake_module.batched_stages()
+    bundle = Bundle(bundle_path, device=device)
+    pipeline = MlxPipeline(bundle)
+    style_names = [STYLES[0]] if homogeneous else list(STYLES)
+    report: dict = {"device": device, "repeats": repeats, "homogeneous": homogeneous,
+                    "stages": sorted(stages), "batches": {}}
+    for size in batch_sizes:
+        scenarios = [
+            bake_module.Scenario(
+                label=f"B{size}-s{index}-{style_names[index % len(style_names)]}",
+                style=load_style(styles_dir / f"{style_names[index % len(style_names)]}.mbstyle"),
+                seed=seed + index,
+                movement=(0.2, 0.0, 0.0))
+            for index in range(size)]
+        # Reference arm with stage snapshots (the campaign basis) and one untimed
+        # warm-up of each arm: the batched forwards and the generator machinery
+        # both compile on first use.
+        reference, single = bake_module.record_serial(pipeline, bundle, scenarios,
+                                                      capture_stages=True)
+        # The round-4 arm, untimed: its recorded ``StageDriver``s are the shape
+        # groups ``stage_throughput`` times, and they are the same rows the single
+        # pass consumes (round 5 used them for exactly this reconciliation).
+        round4 = bake_module.drive_batch(pipeline, bundle, scenarios, stages,
+                                         capture_trace=False)
+        bake_module.drive_batch_single_pass(pipeline, bundle, scenarios, stages,
+                                            capture_trace=False)
+        bake_module.drive_batch_single_pass(pipeline, bundle, scenarios, stages,
+                                            capture_trace=False,
+                                            profile=bake_module.Profile())
+
+        profiled_runs: list[dict] = []
+        plain_times: list[float] = []
+        for repeat in range(repeats):
+            # Interleaved, order rotated: the instrument and the accepted path pay
+            # the same drift.
+            for use_profile in ((False, True) if repeat % 2 == 0 else (True, False)):
+                if use_profile:
+                    profile = bake_module.Profile()
+                    started = _time.perf_counter()
+                    bake_module.drive_batch_single_pass(
+                        pipeline, bundle, scenarios, stages, capture_trace=False,
+                        profile=profile)
+                    total_ms = (_time.perf_counter() - started) * 1000.0
+                    profiled_runs.append({"total_ms": total_ms,
+                                          **profile.summary(total_ms, size)})
+                else:
+                    started = _time.perf_counter()
+                    bake_module.drive_batch_single_pass(
+                        pipeline, bundle, scenarios, stages, capture_trace=False)
+                    plain_times.append((_time.perf_counter() - started) * 1000.0)
+
+        # Inertness: the instrument must not change what is computed.  Capturing
+        # the trace lets `compare_bitwise` check tokens, uniforms, the selected
+        # duration, the roots and the rotations, with no tolerance.
+        campaign = bake_module.drive_batch_single_pass(pipeline, bundle, scenarios,
+                                                       stages, capture_trace=True)
+        profiled_campaign = bake_module.drive_batch_single_pass(
+            pipeline, bundle, scenarios, stages, capture_trace=True,
+            profile=bake_module.Profile())
+        inert = bake_module.compare_bitwise(campaign.runs, profiled_campaign.runs)
+
+        segments: dict[str, dict] = {}
+        for name in bake_module.PROFILE_SEGMENTS:
+            per_scenario = [run["segments"][name]["per_scenario_ms"]
+                            for run in profiled_runs]
+            segments[name] = {
+                "per_scenario_ms_p50": _statistics.median(per_scenario),
+                "per_scenario_ms_min": min(per_scenario),
+                "calls_p50": _statistics.median(
+                    [run["segments"][name]["calls"] for run in profiled_runs]),
+            }
+        totals = [run["measured_total_ms"] for run in profiled_runs]
+        closed = [run["segments_total_ms"] for run in profiled_runs]
+        closures = [run["closure_residual_ms"] for run in profiled_runs]
+        total_p50 = _statistics.median(totals)
+        closed_p50 = _statistics.median(closed)
+        host_sum = sum(segments[name]["per_scenario_ms_p50"]
+                       for name in PROFILE_HOST_SEGMENTS)
+        orchestrator_sum = sum(segments[name]["per_scenario_ms_p50"]
+                               for name in PROFILE_ORCHESTRATOR_SEGMENTS)
+
+        # The round-5 subtraction basis, measured on the same scenario set, so the
+        # direct table can be reconciled with it instead of replacing it silently.
+        forward_row = {name: row for name, row in bake_module.stage_throughput(
+            pipeline, round4.drivers, repeats=max(repeats, 5)).items()
+            if name != "root" and row["batch"] == size}
+        subtraction_forwards = sum(row["per_scenario_ms"] for row in forward_row.values())
+        injected_host = bake_module.host_pass_timing_single_pass(
+            pipeline, bundle, scenarios, stages, campaign.rows, repeats=repeats)
+
+        entry = {
+            "batch_size": size,
+            "repeats": repeats,
+            "token_groups": {str(record.tokens): sum(
+                1 for other in reference if other.tokens == record.tokens)
+                for record in reference},
+            "suspensions_round4": round4.suspensions,
+            "segments": segments,
+            "per_scenario_ms_p50": total_p50 / size,
+            "segments_total_ms_p50": closed_p50,
+            "closure_residual_ms_p50": _statistics.median(closures),
+            "closure_residual_pct": (100.0 * _statistics.median(closures) / total_p50
+                                     if total_p50 else None),
+            "plain_ms_p50": _statistics.median(plain_times),
+            "plain_vs_profiled": (_statistics.median(plain_times) / total_p50
+                                  if total_p50 else None),
+            "instrument_cost_ms_p50": _statistics.median(plain_times) - total_p50,
+            "host_glue_ms_per_scenario": host_sum,
+            "orchestrator_ms_per_scenario": orchestrator_sum,
+            "inert": inert,
+            "inert_ok": bool(inert["bit_identical"]),
+            "reconciliation": {
+                "direct_host_glue_ms_per_scenario": host_sum,
+                "injected_host_pass_ms_per_scenario": injected_host["per_scenario_ms_p50"],
+                "direct_forward_ms_per_scenario": (
+                    segments["forward"]["per_scenario_ms_p50"]
+                    + segments["eval"]["per_scenario_ms_p50"]
+                    + segments["stack"]["per_scenario_ms_p50"]),
+                "stage_throughput_forwards_ms_per_scenario": subtraction_forwards,
+            },
+        }
+        report["batches"][str(size)] = entry
+
+        print(f"B={size:<3d} single pass {entry['per_scenario_ms_p50']:6.3f} ms/scenario "
+              f"(plain {entry['plain_ms_p50'] / size:6.3f});  "
+              f"segments {closed_p50 / size:6.3f};  closure "
+              f"{entry['closure_residual_ms_p50'] / size:+.4f} ms "
+              f"({entry['closure_residual_pct']:.2f}%);  inert={entry['inert_ok']}")
+        print(f"       {'segment':<18s} {'ms/scenario':>11s} {'share':>7s}  calls")
+        for name in bake_module.PROFILE_SEGMENTS:
+            row = segments[name]
+            share = 100.0 * row["per_scenario_ms_p50"] / entry["per_scenario_ms_p50"]
+            print(f"       {name:<18s} {row['per_scenario_ms_p50']:11.4f} {share:6.2f}%  "
+                  f"{row['calls_p50']:5.0f}")
+        print(f"       {'host glue (sum)':<18s} {host_sum:11.4f} "
+              f"{100.0 * host_sum / entry['per_scenario_ms_p50']:6.2f}%")
+        print(f"       {'orchestrator (sum)':<18s} {orchestrator_sum:11.4f} "
+              f"{100.0 * orchestrator_sum / entry['per_scenario_ms_p50']:6.2f}%")
+        print(f"       {'closure residual':<18s} "
+              f"{entry['closure_residual_ms_p50'] / size:11.4f} "
+              f"{entry['closure_residual_pct']:6.2f}%")
+        print(f"       reconciliation: direct host glue {host_sum:.3f} vs injected "
+              f"{injected_host['per_scenario_ms_p50']:.3f};  direct forwards "
+              f"{entry['reconciliation']['direct_forward_ms_per_scenario']:.3f} vs "
+              f"stage_throughput {subtraction_forwards:.3f}")
+    bundle.release()
+    return report
+
+
+#: The two configurations of the round-6 paired bake comparison.  Both keep the
+#: round-4 stage set; the only difference is the decode batch switch.
+DECODE_PAIRED_ARMS = (
+    ("decode_off", "bake_root_batch=1,bake_decoder_batch=1"),
+    ("decode_on", "bake_root_batch=1,bake_decoder_batch=1,bake_decode_batch=1"),
+)
+
+
+def bake_decode_paired_measure(device: str, styles_dir: Path, bundle_path: Path,
+                               batch_sizes, seed: int, repeats: int,
+                               homogeneous: bool = True) -> dict:
+    """Round 6: the decode batch, measured **paired inside one process**.
+
+    The criteria (43.2 item 4) do not accept a ratio of two separately timed runs.
+    Both arms therefore run the identical scenario set, alternating inside one
+    process with the order rotated, and the reported number is the per-repeat
+    ratio ``decode_off / decode_on`` (its p50 and IQR), exactly the shape round 1
+    used for its paired arms.
+
+    The switch is read per call (``nn._opt`` reads the environment), so the two
+    arms are two values of one process rather than two processes, which is what
+    makes drift shared.  Each arm also records the *resolved* switch values, so
+    "the arm really took effect" is evidence rather than an assumption (the
+    round-3 lesson), and the two arms' ``Run``s are compared bit for bit: a
+    decode batch that changes a single value is not a speedup.
+    """
+    import os
+    import statistics as _statistics
+    import time as _time
+
+    from motionbricks_mlx.models import bake as bake_module
+    from motionbricks_mlx.models import nn as nn_module
+
+    bundle = Bundle(bundle_path, device=device)
+    pipeline = MlxPipeline(bundle)
+    style_names = [STYLES[0]] if homogeneous else list(STYLES)
+    report: dict = {"device": device, "repeats": repeats, "homogeneous": homogeneous,
+                    "arms": {name: value for name, value in DECODE_PAIRED_ARMS},
+                    "batches": {}}
+    for size in batch_sizes:
+        scenarios = [
+            bake_module.Scenario(
+                label=f"B{size}-s{index}-{style_names[index % len(style_names)]}",
+                style=load_style(styles_dir / f"{style_names[index % len(style_names)]}.mbstyle"),
+                seed=seed + index,
+                movement=(0.2, 0.0, 0.0))
+            for index in range(size)]
+        reference, single = bake_module.record_serial(pipeline, bundle, scenarios,
+                                                      capture_stages=True)
+        # Warm up each arm outside the timed region (compile variants, generator).
+        for _, value in DECODE_PAIRED_ARMS:
+            os.environ["MOTIONBRICKS_MLX_OPT"] = value
+            bake_module.drive_batch_single_pass(pipeline, bundle, scenarios,
+                                                bake_module.batched_stages(),
+                                                capture_trace=False)
+        # "The arm really took effect": the resolved switches of each arm.
+        resolved = {}
+        for name, value in DECODE_PAIRED_ARMS:
+            os.environ["MOTIONBRICKS_MLX_OPT"] = value
+            resolved[name] = {key: nn_module._opt(key) for key in
+                              ("bake_root_batch", "bake_decoder_batch",
+                               "bake_decode_batch")}
+
+        timings: dict[str, list[float]] = {name: [] for name, _ in DECODE_PAIRED_ARMS}
+        for repeat in range(repeats):
+            order = list(DECODE_PAIRED_ARMS)
+            if repeat % len(order):
+                order = order[repeat % len(order):] + order[:repeat % len(order)]
+            for name, value in order:
+                os.environ["MOTIONBRICKS_MLX_OPT"] = value
+                started = _time.perf_counter()
+                bake_module.drive_batch_single_pass(pipeline, bundle, scenarios,
+                                                    bake_module.batched_stages(),
+                                                    capture_trace=False)
+                timings[name].append((_time.perf_counter() - started) * 1000.0)
+
+        off, on = timings["decode_off"], timings["decode_on"]
+        ratios = [a / b for a, b in zip(off, on)]
+        ordered = sorted(ratios)
+        # Bit-identity of the two arms on the campaign path (traces captured).
+        runs = {}
+        for name, value in DECODE_PAIRED_ARMS:
+            os.environ["MOTIONBRICKS_MLX_OPT"] = value
+            runs[name] = bake_module.drive_batch_single_pass(
+                pipeline, bundle, scenarios, bake_module.batched_stages(),
+                capture_trace=True)
+        cross = bake_module.compare_bitwise(runs["decode_off"].runs, runs["decode_on"].runs)
+        comparison = bake_module.compare([record.run for record in reference],
+                                         runs["decode_on"].runs)
+
+        entry = {
+            "batch_size": size,
+            "resolved_switches": resolved,
+            "arms_effective": resolved["decode_off"] != resolved["decode_on"],
+            "per_arm": {
+                name: {"p50_ms": _statistics.median(values),
+                       "min_ms": min(values),
+                       "ms_per_scenario": _statistics.median(values) / size,
+                       "times_ms": values}
+                for name, values in timings.items()},
+            "paired_p50_ratio": _statistics.median(ratios),
+            "paired_q1_ratio": ordered[len(ordered) // 4],
+            "paired_q3_ratio": ordered[(3 * len(ordered)) // 4],
+            "paired_mean_ratio": _statistics.fmean(ratios),
+            "ratios": ratios,
+            "bitwise": cross,
+            "bit_identical": bool(cross["bit_identical"]),
+            "token_groups": {str(record.tokens): sum(
+                1 for other in reference if other.tokens == record.tokens)
+                for record in reference},
+            "comparison": comparison,
+        }
+        report["batches"][str(size)] = entry
+        print(f"B={size:<3d} decode off {entry['per_arm']['decode_off']['ms_per_scenario']:6.3f} "
+              f"ms/scenario   on {entry['per_arm']['decode_on']['ms_per_scenario']:6.3f}   "
+              f"paired p50 {entry['paired_p50_ratio']:.4f}x "
+              f"[{entry['paired_q1_ratio']:.3f}-{entry['paired_q3_ratio']:.3f}]   "
+              f"bit_identical={entry['bit_identical']}  arms_effective="
+              f"{entry['arms_effective']}")
+        print(f"       campaign (decode on): tokens {comparison['token_identical']}/"
+              f"{comparison['scenarios']}, uniforms {comparison['uniform_identical']}, "
+              f"duration {comparison['selected_identical']}, "
+              f"{comparison['differing_tokens']}/{comparison['total_tokens']} differ; "
+              f"worst roots {comparison['worst_roots_m']:.3e} m, "
+              f"rotations {comparison['worst_rotations']:.3e}")
     bundle.release()
     return report
 
