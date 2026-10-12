@@ -565,9 +565,20 @@ def bake_full_measure(device: str, styles_dir: Path, bundle_path: Path, batch_si
             "margins": margins,
             "safety": bake_module.safety_factor(perturbations, margins),
         }
-        if homogeneous and size > 1:
-            entry["stage_throughput"] = bake_module.stage_throughput(
+        if homogeneous:
+            stages_table = bake_module.stage_throughput(
                 pipeline, campaign.drivers, repeats=max(repeats, 5))
+            entry["stage_throughput"] = stages_table
+            host = bake_module.host_pass_timing(pipeline, bundle, scenarios,
+                                                campaign.drivers, repeats=repeats)
+            stage_sum = sum(row["per_scenario_ms"] for row in stages_table.values()
+                            if row["batch"] == size)
+            host["batched_stage_sum_ms"] = stage_sum
+            host["single_pass_ms_per_scenario"] = stage_sum + host["per_scenario_ms_p50"]
+            host["measured_ms_per_scenario"] = (entry["batched_ms_p50"] / size)
+            host["driver_overhead_ms_per_scenario"] = (
+                entry["batched_ms_p50"] / size - host["single_pass_ms_per_scenario"])
+            entry["residual"] = host
         report["batches"][str(size)] = entry
         safety = entry["safety"]
         print(f"B={size:<3d} serial p50 {entry['serial_ms_p50']:8.2f} ms   "
@@ -588,6 +599,13 @@ def bake_full_measure(device: str, styles_dir: Path, bundle_path: Path, batch_si
               f"{safety['duration_margin']:.3e} = "
               f"{safety['duration_ratio'] if safety['duration_ratio'] is None else format(safety['duration_ratio'], '.4f')}x   "
               f"stages {sorted(stages)}")
+        if "residual" in entry:
+            r = entry["residual"]
+            print(f"       per-scenario: batched stages {r['batched_stage_sum_ms']:5.2f} ms + "
+                  f"host pass {r['per_scenario_ms_p50']:5.2f} ms = "
+                  f"single-pass {r['single_pass_ms_per_scenario']:5.2f} ms;  "
+                  f"measured {r['measured_ms_per_scenario']:5.2f} ms;  "
+                  f"driver re-execution {r['driver_overhead_ms_per_scenario']:5.2f} ms")
         for stage, row in sorted(entry.get("stage_throughput", {}).items()):
             print(f"       stage {stage:<8s} serial {row['serial_p50_ms']:7.3f} ms/plan   "
                   f"batched {row['batched_p50_ms']:8.3f} ms   "

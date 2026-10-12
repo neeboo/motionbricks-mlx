@@ -233,7 +233,7 @@ class MlxPipeline:
         if enabled == 1:
             tokens = 6 + int(np.flatnonzero(allowed)[0])
         elif enabled > 1:
-            if bake is not None:
+            if bake is not None and bake.batches("probe"):
                 mx_duration_logits = bake.duration(
                     mx.array(normalized_global), mx.array(normalized_local),
                     mx.array(normalized_poses), mx.array(global_mask),
@@ -278,7 +278,7 @@ class MlxPipeline:
                 # normalized too (src/root.cpp:464-469).
                 dense_target[frame] = normalized_global[boundary_index]
                 dense_target_mask[frame, 0] = 1.0 if constraints.has_global_root[boundary_index] else 0.0
-        if bake is not None:
+        if bake is not None and bake.batches("plan"):
             # Round-4 stage driver: a batched root forward replaces this one, and
             # the accepted serial call is not made at all.
             predicted_global = bake.plan(
@@ -393,7 +393,7 @@ class MlxPipeline:
         pose_tokens = np.full((tokens, 8), 10, dtype=np.int32)
         pose_condition_device = mx.array(pose_condition)
         has_pose_device = mx.array(has_pose_condition.astype(np.float32)[:, None])
-        if bake is not None:
+        if bake is not None and bake.batches("pose"):
             logits = bake.pose(pose_tokens, pose_root_argument, pose_condition_device,
                                has_pose_device, tokens, tokens)
         else:
@@ -454,7 +454,7 @@ class MlxPipeline:
         # on the host, hand it straight to ``decode_motion`` instead of reading it
         # back and re-uploading it.  Same values either way -- this removes a
         # host synchronisation, not a computation.
-        if bake is not None:
+        if bake is not None and bake.batches("decoder"):
             decoded_device = bake.decoder(
                 mx.array(quantized), external_argument, pose_condition_device,
                 has_pose_device, tokens)

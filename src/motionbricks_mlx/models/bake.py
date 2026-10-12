@@ -314,6 +314,14 @@ class StageDriver:
         self.suspensions = 0
 
     def batches(self, stage: str) -> bool:
+        """True when this driver owns *stage*; ``run_transition`` asks first.
+
+        The two halves of the root stage are asked for under their own names
+        (``probe`` for the duration probe, ``plan`` for the token transformer and
+        convolutional decoder), because they are separate suspension points.
+        """
+        if stage in ("probe", "plan"):
+            return "root" in self.stages
         return stage in self.stages
 
     def _barrier(self, stage: str, inputs):
@@ -438,6 +446,7 @@ class BatchResult:
     drivers: list[StageDriver]
     suspensions: int
     stage_sizes: dict[str, int]
+    agents: list = field(default_factory=list)
 
 
 def drive_batch(pipeline, bundle, scenarios: list[Scenario],
@@ -506,13 +515,47 @@ def drive_batch(pipeline, bundle, scenarios: list[Scenario],
                        drivers,
                        sum(d.suspensions for d in drivers),
                        {name: sum(1 for d in drivers if _owns(d, name))
-                        for name in STAGE_ORDER})
+                        for name in STAGE_ORDER},
+                       agents)
 
 
 def _row(driver: StageDriver, stage: str) -> np.ndarray:
     row = driver.rows[stage]
     return np.zeros(0, np.float32) if row is None else np.asarray(
         row, dtype=np.float32).reshape(-1).copy()
+
+
+def host_pass_timing(pipeline, bundle, scenarios: list[Scenario],
+                     drivers: list[StageDriver], repeats: int = 5) -> dict:
+    """Time the pass in which every batched row is already available.
+
+    That pass runs no neural forward at all, so what it measures is the *host*
+    side of a bake -- normalisation, the dense target, the predicted local root,
+    sampling, the codebook gather, the motion decode and the agent maths -- which
+    is the part batching cannot remove.  Each repeat uses a freshly reset agent so
+    the measurement is not affected by the context blend of the previous call.
+    """
+    import statistics
+    import time
+
+    per_scenario: list[list[float]] = [[] for _ in scenarios]
+    for _ in range(repeats):
+        for index, scenario in enumerate(scenarios):
+            agent = _new_agent(pipeline, bundle)
+            agent.reset(scenario.style)
+            started = time.perf_counter()
+            motion, _ = agent.plan(scenario.command(), scenario.style,
+                                   capture_trace=False, bake=drivers[index])
+            mx.eval(mx.array(motion.roots.sum()))
+            per_scenario[index].append((time.perf_counter() - started) * 1000.0)
+    medians = [statistics.median(values) for values in per_scenario]
+    return {
+        "repeats": repeats,
+        "per_scenario_ms_p50": statistics.median(medians),
+        "worst_scenario_ms": max(medians),
+        "total_ms_p50": statistics.median(medians) * len(scenarios),
+        "per_scenario_ms": medians,
+    }
 
 
 def stage_perturbations(reference: list[Recorded], candidate: list[Run]) -> dict[str, float]:
@@ -620,6 +663,17 @@ def _batched_stage(pipeline, stage: str, drivers: list[StageDriver],
     return pipeline.decoder.decode_batch(*stacked, key)
 
 
+def _stage_key(stage: str, driver: StageDriver):
+    """The shape key of a batched forward: what makes two rows share one call."""
+    if stage == "plan":
+        return driver.inputs["plan"]["tokens"]
+    if stage == "pose":
+        return (driver.inputs["pose"]["positions"], driver.inputs["pose"]["num_tokens"])
+    if stage == "decoder":
+        return driver.inputs["decoder"]["positions"]
+    return None
+
+
 def stage_throughput(pipeline, drivers: list[StageDriver], repeats: int = 5) -> dict:
     """Batched stage p50 against ``B`` separate serial forwards, per stage.
 
@@ -633,12 +687,10 @@ def stage_throughput(pipeline, drivers: list[StageDriver], repeats: int = 5) -> 
 
     size = len(drivers)
     table: dict[str, dict] = {}
-    for stage, key in (("probe", None), ("plan", drivers[0].inputs["plan"]["tokens"]),
-                       ("pose", (drivers[0].inputs["pose"]["positions"],
-                                 drivers[0].inputs["pose"]["num_tokens"])),
-                       ("decoder", drivers[0].inputs["decoder"]["positions"])):
-        if stage not in STAGE_ORDER or any(d.inputs.get(stage) is None for d in drivers):
-            continue
+    for stage in STAGE_ORDER:
+        if any(d.inputs.get(stage) is None for d in drivers):
+            continue                       # a stage this driver set did not own
+        key = _stage_key(stage, drivers[0])
         serial: list[float] = []
         for driver in drivers:
             started = time.perf_counter()

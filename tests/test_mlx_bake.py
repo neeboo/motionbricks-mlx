@@ -322,3 +322,48 @@ def test_constraints_for_is_what_plan_runs():
 
     for field, value in seen["constraints"].items():
         assert np.array_equal(getattr(before, field), value), field
+
+
+@NEEDS
+def test_driver_only_intercepts_the_stages_it_owns(monkeypatch):
+    """A stage the driver does not own must be run by the accepted code.
+
+    Regression: the four hooks used to fire whenever a driver was present, so a
+    ``{pose, root}`` driver was still asked for the decoder, suspended on a stage
+    it did not own, and the scheduler could never resolve it.  A subset
+    configuration is how the report attributes the gain between stages, so the
+    stage set has to be honoured at the seam.
+    """
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", "bake_root_batch=1")
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(2)
+    stages = bake.batched_stages()
+    assert stages == frozenset({"pose", "root"})
+    calls: list[str] = []
+    original = pipeline.decoder.decode
+
+    def spy(*args, **kwargs):
+        calls.append("decoder")
+        return original(*args, **kwargs)
+
+    pipeline.decoder.decode = spy
+    try:
+        reference, _ = bake.record_serial(pipeline, bundle, batch, capture_stages=True)
+        after_reference = len(calls)
+        result = bake.drive_batch(pipeline, bundle, batch, stages)
+        after_bake = len(calls)
+        result_again = bake.drive_batch(pipeline, bundle, batch, stages)
+        after_second = len(calls)
+    finally:
+        pipeline.decoder.decode = original
+    assert len(result.runs) == len(batch) == len(result_again.runs)
+    # Exactly one serial decoder call per scenario per *completed* bake: the
+    # passes that suspend before the decoder never reach it.
+    assert after_reference - 0 == len(batch)
+    assert after_bake - after_reference == len(batch)
+    assert after_second - after_bake == len(batch)
+    comparison = bake.compare([record.run for record in reference], result.runs)
+    assert comparison["token_identical"] == len(batch)
+    assert comparison["differing_tokens"] == 0
+    assert result.stage_sizes["decoder"] == 0
