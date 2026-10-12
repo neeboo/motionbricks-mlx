@@ -838,3 +838,89 @@ regenerating documents during round 2 this workstream ran
 `out/plan-default-cpu.json`, `out/plan-opt-base-cpu.json`,
 `out/plan-final-default.json`, `out/plan-mlx-rep.json`) and the restoration was
 verified by replaying the pre-round-2 path against it.  Always pass `--out`.
+
+---
+
+# Round 3 — backend-conditional defaults, batch bake, fewer host syncs
+
+Frozen at `2026-10-12T21:37:24+08:00`, **before any code change of this round**,
+at commit `1a076e02c3020bdeb792305118acd046619707bf`.  Everything in this section
+is the round-3 *adoption criteria*; it is written first and is not edited
+afterwards.  Section 0 and section 12 stay valid and are **not** relaxed.
+
+## 21. Frozen round-3 criteria
+
+Three subjects, all inside the standing edit grant:
+
+1. **Decision `docs/decisions/0005-backend-conditional-compile.md`** — give
+   `pose_compile` / `root_compile` / `decoder_compile` a **backend-dependent
+   default**: on for Metal, off for every non-Metal backend.  This is an
+   *implementation of a ratified decision*, not a new candidate: its acceptance
+   list is the one written in the decision, quoted here verbatim so the report
+   is self-contained:
+   1. the GPU default-path document is **byte-identical** to the same document
+      produced before the change (`diff -q` clean); `mlx_align.py plan` and
+      `mlx_align.py trace` still OK with `pose.tokens` and
+      `pose.sampling_uniforms` at `0`;
+   2. on the **CPU** default, peak MLX memory returns to ~748 MB / RSS ~854 MB,
+      and the p50 is **not worse** than `MOTIONBRICKS_MLX_OPT=0` (inside drift is
+      enough);
+   3. 5 seeds x 6 steps stay token-identical; `mlx_plan.py --repeat 2` is
+      deterministic on **both** backends; `pytest` stays green (135 passed /
+      1 skipped at the start of this round — the count may only grow).
+
+   The rule that comes with the decision is also binding: **`mlx_plan.py` is
+   always run with an explicit `--out`.**  The conventional path
+   `out/plan-mlx.json` is never the target of a measurement.
+
+2. **Batch bake (`B` independent scenarios through one batched forward).**
+   Round 1 measured the batched *pose planner* at 2.37x / 3.12x / 6.05x
+   throughput for `B` = 2 / 4 / 8 and found `B >= 4` **not bitwise**
+   (section 5).  This round asks whether that option is usable for *offline
+   bake* with evidence:
+
+   * for `B` = 1 / 2 / 4 / 8 / 16 report throughput (scenarios/s), whole-batch
+     latency, and the single-scenario p50;
+   * the **token campaign**: for every one of the `B` scenarios, compare
+     `pose.tokens`, `pose.sampling_uniforms` and the final action against the
+     **same scenario run at `B = 1`**, and report the per-group bit-identity rate
+     and the worst deviation (max |Δ| on `roots` in m, on `rotations`, and the
+     worst margin as a factor of the `mlx_align` tolerance);
+   * the conclusion is the **safe-B rule**: *the largest `B` whose scenarios are
+     all token-identical to `B = 1` is the **reproducible bake tier**; any larger
+     `B` is a **fast-draft tier only**, and the batch size used must be recorded
+     in the product manifest.*  The rule is written into this report and into a
+     `docs/decisions/` **proposal** (the decision itself is the lead's to make).
+
+   Batch bake is *outside* the single-plan latency gate of section 0.2 by
+   construction: it does not lower single-plan p50, it raises throughput per
+   scenario.  It is therefore judged on its own two numbers — throughput gain
+   and token identity — and never reported as a latency win.
+
+3. **Fewer host synchronisations per step.**  Section 19 item 3 records 4-6
+   `np.asarray(mx...)` drains per step (duration selection, the root planner's
+   output, the pose logits, the decoder output, the decoded motion).  Each one
+   ends the current graph and waits for the device.  Each candidate is measured
+   and judged on its own:
+
+   * **correctness gate** (section 12.1, unchanged): `mlx_align.py plan` and
+     `trace` still OK; for `N >= 5` seeds x 6 steps `pose.tokens` and
+     `pose.sampling_uniforms` are element-for-element identical to the round-2
+     default; the final action deviation is reported even when it is zero.
+   * **adoption rule** (section 12.2, unchanged): *token-identical **and**
+     alignment not regressed **and** paired p50 `>= 1.05x`* => default **on**.
+     **Any** token difference => default **off**, with the admissible scope
+     named (`real-time` / `batch-bake` / `offline-only`) and the measured
+     deviation written down.
+   * **measurement discipline** (section 0.3 / 12.3, unchanged): the `uptime`
+     load average is recorded with every measurement; every A/B pair is
+     **interleaved inside one process** on the identical step sequence with the
+     arm order rotated; **>= 25 steps per arm**; p50 / p90 / max; same bundle,
+     same seeds, same backend.
+
+### 21.1 Reporting format fixed in advance
+
+Every item reports, in this order: the paired ratio with its inter-quartile
+range, the pooled p50 / p90 / max per arm, the token-identity count, and the
+verdict against the rule above.  A rejected item keeps its number and its
+reason.  Nothing in this section is edited after the measurements.
