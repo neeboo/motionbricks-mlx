@@ -1,0 +1,15 @@
+motionbrick-mlx
+Copyright 2026 gmgn radio contributors
+
+This project is an independent MLX (Apple Silicon) implementation inspired by,
+and in places derived from, the architecture of:
+
+  MotionBricks — "Scalable Real-Time Motions with Modular Latent Generative
+  Model and Smart Primitives", NVIDIA (NVlabs/GR00T-WholeBodyControl,
+  motionbricks/).  Source code: Apache License 2.0.
+  Pretrained model weights: NVIDIA Open Model License.
+
+We take the source-code route only (Apache-2.0): no NVIDIA pretrained weights
+are used, converted or redistributed. Every checkpoint this project produces is
+trained from data we generate ourselves. Files carrying upstream-derived code
+mark the change and the origin in a header comment.
