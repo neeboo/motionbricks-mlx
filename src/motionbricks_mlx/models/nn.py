@@ -48,6 +48,11 @@ LAYER_NORM_EPSILON = 1.0e-5  # ggml_norm(ctx, x, 1.0e-5F) in src/root.cpp:59
 # correctness risk to trade against the speed gate.  Quantization stays off
 # (`MOTIONBRICKS_MLX_QUANT` unset) and is **not** token-identical.
 #
+# Decision `docs/decisions/0005-backend-conditional-compile.md` then made the
+# three ``*_compile`` switches **backend-conditional**: Metal keeps them on, a
+# non-Metal backend defaults them off.  An explicit environment value still wins
+# on either backend, so every earlier A/B stays reproducible.
+#
 # The value is read on every call (not at import time) so that both arms can be
 # interleaved inside one process.  Unknown names keep their declared default, so
 # adding a switch cannot silently change an existing run.
@@ -68,12 +73,58 @@ OPT_DEFAULTS: dict[str, bool] = {
     "decoder_fast": True,
     "decoder_compile": True,
     "sampling_vector": True,
+    # Round-3 host-synchronisation candidates (report section 21 item 3).  They
+    # decide whether `round 3 results` in `docs/optimization-report.md` adopts
+    # them; the declared default here is the measured verdict.
+    "decoder_defer": False,
+    "pred_local_defer": False,
+    "root_boundary_reuse": False,
 }
+
+# Switches whose *effective* default is decided by the execution backend
+# (decision `docs/decisions/0005-backend-conditional-compile.md`): the Metal
+# backend keeps them on, every non-Metal backend defaults them off.  They are
+# the only three switches that go through ``mx.compile``, and the measured case
+# for compiling them is Metal-only: on the CPU backend the compiled variants
+# cost ~60 ms of cold start and showed no latency gain (report sections 4, 13.1
+# and 22), while on Metal the same variants are where the round-1 item-1 win
+# came from.  ``OPT_DEFAULTS`` still holds the *declared* (Metal) value so the
+# table stays the single description of the adopted path.
+_BACKEND_CONDITIONAL: frozenset[str] = frozenset(
+    ("pose_compile", "root_compile", "decoder_compile"))
+
+
+def metal_backend() -> bool:
+    """True when MLX's default device is the Metal (GPU) backend.
+
+    ``mx.default_device()`` is read per call, like the environment, because
+    ``Bundle(device=...)`` selects the backend after import time and both arms
+    of an A/B can therefore run in one process.  If the probe itself ever fails,
+    the declared (ratified) default wins, so an MLX API change cannot silently
+    move the Metal path off its adopted behaviour.
+    """
+    try:
+        return mx.default_device().type == mx.DeviceType.gpu
+    except Exception:                                  # pragma: no cover - defensive
+        return True
+
+
+def declared_default(name: str) -> bool:
+    """The effective default of *name*, after the backend-conditional rule."""
+    declared = OPT_DEFAULTS.get(name, False)
+    if name in _BACKEND_CONDITIONAL:
+        return declared and metal_backend()
+    return declared
+
+
+def effective_defaults() -> dict[str, bool]:
+    """Every switch's effective default on the backend selected right now."""
+    return {name: declared_default(name) for name in OPT_DEFAULTS}
 
 
 def _opt(name: str) -> bool:
-    """``_option(name, OPT_DEFAULTS[name])`` — the switch as configured."""
-    return _option(name, OPT_DEFAULTS.get(name, False))
+    """``_option(name, declared_default(name))`` — the switch as configured."""
+    return _option(name, declared_default(name))
 
 
 def _option(name: str, default: bool = False) -> bool:
@@ -91,9 +142,11 @@ def _option(name: str, default: bool = False) -> bool:
     ``MOTIONBRICKS_MLX_OPT=0,pose_compile=1`` is the pre-decision-0004 behaviour
     of "the accepted path plus only the pose planner's compiled graph".
 
-    ``default`` is the value used when ``MOTIONBRICKS_MLX_OPT`` is unset; the
-    call sites declare ``True`` for the float32 group adopted by decision 0004
-    and ``False`` for anything else.
+    ``default`` is the value used when ``MOTIONBRICKS_MLX_OPT`` is unset.  The
+    call sites do not pass a literal: :func:`_opt` passes
+    :func:`declared_default`, which is ``True`` for the float32 group adopted by
+    decision 0004 and, for the three ``*_compile`` switches, backend-conditional
+    per decision 0005.
     """
     raw = os.environ.get("MOTIONBRICKS_MLX_OPT")
     if raw is None:

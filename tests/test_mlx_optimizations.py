@@ -34,7 +34,19 @@ HAVE_BUNDLE = (MLX_BUNDLE / "manifest.json").is_file()
 
 # The full switch set, in the order used by the report.
 SWITCHES = ("pose_fast", "pose_compile", "root_fast", "root_compile", "root_dedup",
-            "decoder_fast", "decoder_compile", "transition_fast", "sampling_vector")
+            "decoder_fast", "decoder_compile", "transition_fast", "sampling_vector",
+            "decoder_defer", "pred_local_defer", "root_boundary_reuse")
+# Switches whose declared default is on (decision 0004's float32 group).  The
+# three round-3 host-synchronisation candidates measured below the section-21
+# adoption bar and are therefore declared off (report section 24).
+DECLARED_ON = ("pose_fast", "pose_compile", "root_fast", "root_compile", "root_dedup",
+               "decoder_fast", "decoder_compile", "transition_fast", "sampling_vector")
+
+
+def declared_vector(metal: bool) -> list[bool]:
+    """The expected ``_opt`` vector with the backend probe pinned to *metal*."""
+    return [name in DECLARED_ON and (metal or name not in nn._BACKEND_CONDITIONAL)
+            for name in SWITCHES]
 
 
 def synthetic_constraints() -> TransitionConstraints:
@@ -57,7 +69,9 @@ def synthetic_constraints() -> TransitionConstraints:
 def restore_switches():
     import os
     saved = os.environ.get("MOTIONBRICKS_MLX_OPT")
+    original_probe = nn.metal_backend
     yield
+    nn.metal_backend = original_probe
     if saved is None:
         os.environ.pop("MOTIONBRICKS_MLX_OPT", None)
     else:
@@ -67,20 +81,22 @@ def restore_switches():
 # --- option grammar -------------------------------------------------------
 
 def test_option_grammar():
+    """The grammar is backend-independent: pinned to Metal, every case holds."""
     import os
-    T = [True] * 9
+    nn.metal_backend = lambda: True
+    T = declared_vector(True)                        # the "everything declared on" vector
     cases = {
-        # Decision 0004 item 1: the float32 group is the default path.
         None: T,
-        "1": T,
-        "0": [False] * 9,
+        "1": [True] * len(SWITCHES),                 # bare token = global on
+        "0": [False] * len(SWITCHES),
         # A bare ``name=0`` overrides one switch of the default-on group.
-        "pose_compile=0": [True, False, True, True, True, True, True, True, True],
-        "1,pose_compile=0": [True, False, True, True, True, True, True, True, True],
+        "pose_compile=0": [value and name != "pose_compile"
+                           for name, value in zip(SWITCHES, T)],
+        "1,pose_compile=0": [name != "pose_compile" for name in SWITCHES],
         # The old "accepted path plus one switch" is still expressible: the
         # global token comes first and is applied in order.
-        "0,pose_compile=1": [False, True, False, False, False, False, False, False, False],
-        "*=0,sampling_vector=1": [False] * 8 + [True],
+        "0,pose_compile=1": [name == "pose_compile" for name in SWITCHES],
+        "*=0,sampling_vector=1": [name == "sampling_vector" for name in SWITCHES],
     }
     for value, expected in cases.items():
         if value is None:
@@ -91,29 +107,41 @@ def test_option_grammar():
         assert got == expected, f"{value!r} -> {got}"
 
 
-def test_default_is_the_adopted_optimized_path():
-    """Decision 0004 item 1: the bit-identical f32 group is default-on.
+def test_defaults_are_the_adopted_path_with_backend_conditional_compiles():
+    """Decision 0004's f32 group is on; decision 0005 makes only the compiles conditional.
 
-    Section 8 of the report records every item as *rejected* under the section-0
-    performance gate (>= 1.5x); the lead then adopted this group as a default-on
-    row because it passes the correctness gate at its highest grade.  Both facts
-    hold at once, and this test pins the second one so a later refactor cannot
-    silently revert it.
+    Both facts hold at once: the declared table is the adopted path, an explicit
+    environment value still wins on every backend, and the three ``*_compile``
+    switches -- and nothing else -- follow the backend.
     """
     import os
     os.environ.pop("MOTIONBRICKS_MLX_OPT", None)
-    assert [nn._opt(name) for name in SWITCHES] == [True] * 9
-    # Every switch the call sites can read has a declared default, and only the
-    # bit-identical float32 group is on.
+    nn.metal_backend = lambda: True
+    assert [nn._opt(name) for name in SWITCHES] == declared_vector(True)
+    nn.metal_backend = lambda: False
+    assert [nn._opt(name) for name in SWITCHES] == declared_vector(False)
+    # only the compile switches differ, and only on the non-Metal backend
+    assert nn._BACKEND_CONDITIONAL == {"pose_compile", "root_compile", "decoder_compile"}
+    for name in SWITCHES:
+        assert nn.declared_default(name) is (nn.OPT_DEFAULTS[name]
+                                             and (name not in nn._BACKEND_CONDITIONAL))
+    # Every switch a call site can read has a declared default.
     assert set(nn.OPT_DEFAULTS) == set(SWITCHES)
-    assert all(nn.OPT_DEFAULTS.values())
+    # An explicit value beats the backend rule in both directions.
+    os.environ["MOTIONBRICKS_MLX_OPT"] = "pose_compile=1"
+    assert nn._opt("pose_compile") is True
+    os.environ["MOTIONBRICKS_MLX_OPT"] = "pose_compile=0"
+    assert nn._opt("pose_compile") is False
+    # Effective defaults are reportable, and describe the backend in force.
+    assert nn.effective_defaults()["pose_compile"] is False
+    assert nn.effective_defaults()["transition_fast"] is True
 
 
 def test_off_restores_the_pre_optimization_path():
     """``MOTIONBRICKS_MLX_OPT=0`` is the accepted pre-optimization behaviour."""
     import os
     os.environ["MOTIONBRICKS_MLX_OPT"] = "0"
-    assert [nn._opt(name) for name in SWITCHES] == [False] * 9
+    assert [nn._opt(name) for name in SWITCHES] == [False] * len(SWITCHES)
 
 
 # --- vectorised sampling stream -------------------------------------------
