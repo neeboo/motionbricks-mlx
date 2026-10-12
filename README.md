@@ -84,3 +84,20 @@ python3 scripts/check_env.py     # 打印平台、Python、MLX 与一次矩阵�
 ## 许可证
 
 本仓库代码 **Apache-2.0**；不使用也不分发任何 NVIDIA 权重，详见 `NOTICE`。
+
+## 分工修订（2026-10-12）
+
+上面的表是初版，实际执行后按下列四栏为准（一份文件同时只有一个写手，越界前先协调）：
+
+| 归属 | 谁 | 文件范围 |
+|---|---|---|
+| A. 推理移植与权重转换 | **DeepSeek** | `src/motionbricks_mlx/models/**`、`data/**`、`export/**`、`scripts/mlx_{convert_gguf,plan,align,bench}.py`、`tests/test_mlx_*.py`、`docs/status-deepseek.md`、`docs/decisions/**` 提案 |
+| B. 训练脚手架 | **Claude Code** | `src/motionbricks_mlx/training/**`、`scripts/train_*.py`、`tests/test_training_*.py`、`docs/status-claude.md` |
+| C. 动作质量评测与回归门 | **GLM** | `src/motionbricks_mlx/eval/**`、`scripts/eval_*.py`、`tests/test_eval_*.py`、`docs/status-glm.md` |
+| D. 冻结区 | **人类** | `LICENSE`、`NOTICE`、`pyproject.toml`、`.gitignore`、`README.md`、`docs/motion-representation.md` |
+
+工单：`docs/brief-claude-training.md`（B）、`docs/brief-glm-eval.md`（C）。
+
+**当前状态**：MLX 推理已验收通过（`docs/decisions/0002`、`0003` 与 `docs/status-deepseek.md`）：
+与官方运行时逐数组对齐（roots 6.8e-07 m、旋转 8.7e-06，最差项 0.26× 容差），`pose.tokens` 与参考 0 差，
+MLX GPU(Metal) p50 55.5 ms / 参考 GGML CPU 385.8 ms（同机同 bundle）。
