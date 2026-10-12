@@ -571,6 +571,52 @@ is **not** produced by this flip: a GPU document generated with
 `MOTIONBRICKS_MLX_OPT=0` differs from `out/plan-mlx.json` by exactly the same
 numbers.  The flip itself is a no-op on the numerics of either backend.
 
+### 13.1 The one measured cost of the flip: CPU-backend peak memory
+
+The flip changes nothing numerically, but it does change what the **CPU**
+(LLVM) backend pays, because round-1 section 4's CPU-only `mx.compile`
+side-effect is now on by default.  Measured on the default path, `--devices cpu`,
+25 steps, load ~13:
+
+| configuration | p50 | MLX peak | process RSS |
+| --- | --- | --- | --- |
+| `MOTIONBRICKS_MLX_OPT=0` (pre-decision-0004) | 199.0 ms | 748 MB | 853 MB |
+| default (everything on) | 178.8 ms | **1481 MB** | **1615 MB** |
+| default except the three `*_compile` switches | 173.8 ms | **748 MB** | 854 MB |
+
+So on the CPU backend the compile switches roughly **double peak memory and buy
+nothing** -- the configuration without them measured *faster* (173.8 vs 178.8 ms),
+though these are single-arm runs under drifting load and the honest statement is
+only that the latency difference is inside that drift, while the 2x memory is
+not.  Round 1 measured the same side-effect on the same backend (748 -> 1481 MB,
+188.7 vs 184.5 ms).
+
+This is **not** changed here: decision 0004 adopts the float32 group as a whole
+and this workstream does not quietly carve a switch out of a ratified default.
+It is recorded as the top candidate for the next refinement: give the three
+`*_compile` switches a backend-dependent default (off on the non-Metal backend),
+which recovers 748 MB there at no measured cost.  The exact environment that
+reproduces the recommendation is
+
+```
+MOTIONBRICKS_MLX_OPT=0,pose_fast=1,root_fast=1,root_dedup=1,decoder_fast=1,transition_fast=1,sampling_vector=1
+```
+
+### 13.2 Headline: the default path against the original accepted baseline
+
+| | accepted baseline (section 0) | default path now |
+| --- | --- | --- |
+| MLX GPU per-step p50 | 55.5 ms | **27.3 ms** |
+| MLX GPU p90 | 67.3 ms | 38.7 ms |
+| MLX CPU per-step p50 | 196.3 ms | 178.8 ms |
+| cold start (GPU) | 385.3 ms | 336 ms |
+| MLX peak (GPU) | 748-779 MB | 779 MB |
+| `pose.tokens` vs reference | 0 differences | 0 differences |
+
+i.e. **2.03x** on the single-plan Metal latency the product actually uses, with
+the token identity and the alignment margin unchanged (worst margin 0.26x
+tolerance, same as the recorded accepted state).
+
 ## 14. Item 1 — batched host maths in `data/agent.py`: **adopted**
 
 Each `_ref` function keeps the reference's scalar loop verbatim; a batched twin
@@ -607,7 +653,7 @@ arrays (section 3) has been paid 4 and 1 times instead of 181 and 136.
 | 40 steps | 16.7 -> 17.3 | 44.53 ms | 30.85 ms | **1.556x [1.442-1.814]**, mean 1.587x | **40/40 steps identical, 0/2936 tokens differ** |
 
 `p90` 53.88 -> 37.79 ms and 54.60 -> 36.76 ms; `max` 57.53 -> 40.54 and
-61.64 -> 41.91 ms.
+61.84 -> 41.91 ms.
 
 ### Decision
 
@@ -743,17 +789,23 @@ those kernels; the host no longer competes with that.
 
 Ranked next steps, all inside the existing grants:
 
-1. **Batch bake, not single-plan latency.**  Round 1 section 5 measured 2.37x /
+1. **Give the `*_compile` switches a backend-dependent default.**  Section 13.1:
+   on the CPU backend they cost 748 -> 1481 MB of MLX peak for no measured
+   latency gain, while on Metal they are free (GPU peak unchanged at 779 MB).
+   Defaulting them off on the non-Metal backend recovers the memory with no
+   code change beyond the default table.  This is the only *regression* round 2
+   leaves behind, so it ranks first.
+2. **Batch bake, not single-plan latency.**  Round 1 section 5 measured 2.37x /
    3.12x / 6.05x throughput per scenario at B = 2 / 4 / 8 with the pose planner
    only 7.1 -> 14.7 ms for the whole batch.  With the host now 1.74 ms, a batched
    path would amortise it too.  It needs its own token campaign (B >= 4 was not
    bitwise in round 1).
-2. **Reduce the synchronisation count.**  When `allowed_tokens` selects exactly
+3. **Reduce the synchronisation count.**  When `allowed_tokens` selects exactly
    one duration the duration probe is already skipped; the same could apply to
    the second sync when the root stage's output is only consumed after the
    head offset is known.  Each removed sync is worth the kernel-drain latency,
    not just its own cost.
-3. **Re-measure on an idle machine.**  Every number here is from a shared desktop
+4. **Re-measure on an idle machine.**  Every number here is from a shared desktop
    at load 9.8-17.4; the paired form is what makes the effects separable, but the
    absolute p50 is still inflated by roughly 10 %.
 

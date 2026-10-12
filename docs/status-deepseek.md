@@ -190,3 +190,21 @@ plan 文档：默认路径与优化前默认路径**逐字节相同**；优化�
 `docs/optimization-report.md`、本文件；`training/**`、`train_*.py`、`eval/**`、`eval_*.py`、
 `motion-representation.md`、`README.md`、`NOTICE`、`LICENSE`、`pyproject.toml` 未动；
 `mlx_plan.py`/`mlx_align.py` 语义未改；参考仓库只读；无 push。
+
+**⑨ 翻转的唯一实测代价（CPU 后端内存）**：decision 0004 的 f32 组默认开启后，round 1 记录的
+"`mx.compile` 只在 CPU 后端抬内存"那条副作用就成了默认行为。CPU、25 步、load ~13：
+
+| 配置 | p50 | MLX 峰值 | 进程 RSS |
+|---|---|---|---|
+| `MOTIONBRICKS_MLX_OPT=0`（decision 0004 之前） | 199.0 ms | 748 MB | 853 MB |
+| 默认（全开） | 178.8 ms | **1481 MB** | **1615 MB** |
+| 默认但关掉三个 `*_compile` | 173.8 ms | **748 MB** | 854 MB |
+
+即 **CPU 后端上编译开关大约把峰值内存翻倍而没换来延迟**（不含它们的配置反而略快 173.8 vs 178.8 ms；
+不过这是单臂、负载在漂，诚实的说法是"延迟差在漂移之内，而 2× 内存不是"）。**我没有擅自改**——
+decision 0004 采用整组 f32 优化，我不从已裁定默认里偷偷摘开关；已写进报告 13.1 与"下一步"第 1 条：
+建议把三个 `*_compile` 的默认值改成随后端而定（非 Metal 关闭），复现环境串是
+`MOTIONBRICKS_MLX_OPT=0,pose_fast=1,root_fast=1,root_dedup=1,decoder_fast=1,transition_fast=1,sampling_vector=1`。
+
+**⑩ 默认路径 vs 最初验收基线**：GPU 单步 p50 **55.5 → 27.3 ms（2.03×）**，p90 67.3 → 38.7 ms，
+冷启动 385.3 → 336 ms，GPU 峰值内存不变（779 MB），token 与参考仍是 0 差，对齐最差余量仍是 0.26× 容差。
