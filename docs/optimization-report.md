@@ -1362,3 +1362,103 @@ The per-arm scratch tools used for the round-3 numbers (the 5x6 token gate, the
 `np.asarray` drain counter) lived in `/tmp/r3/`; their measurements are quoted
 above and the properties they rest on are pinned by `tests/test_mlx_bake.py` and
 `tests/test_mlx_optimizations.py`.
+
+---
+
+# Round 4
+
+## 28. Frozen round-4 criteria
+
+Written and committed **before** any measurement or code change of this round, and
+not edited afterwards; the round-4 results are appended below it.  The subject is
+one item, with the round-3 rules carried forward verbatim.
+
+### 28.1 Subject — batching the root and decoder stages
+
+Round 3 (23.4, 26.1) established that the bake ceiling is not the batch size but
+the **share of the step that is batched**: the pose stage is ~23 % of a step, so
+batching it alone cannot exceed ~1.25x end-to-end, and the measured 1.18-1.38x is
+that ceiling, reached.  The remaining ~76 % of a step is the **root stage**
+(the 512-wide boundary/duration transformer, the 512-wide root-token transformer
+and the residual dilated-convolution decoder with its natural leading time axis)
+and the **VQ decoder** (two-level upsample, latent 256).  This round batches
+those two stages, on top of the pose batching already accepted, and answers:
+
+* **stage throughput** for each stage, alone, batched;
+* **end-to-end bake throughput** (scenarios/s), whole-batch latency and
+  single-scenario p50 for `B` = 1 / 2 / 4 / 8 / 16, plus the
+  duration-homogeneous contrast;
+* the **token campaign** at every `B` (28.2) and the **safety margin** measured
+  the same way round 3 measured it (28.2);
+* the **reproducible bake tier** per
+  `docs/decisions/0006-batch-bake-safe-b.md`, and which fields the product
+  manifest must carry.
+
+The stage-level number is reported **as a stage number and never quoted as
+end-to-end**; the end-to-end number is measured as one timed region that
+produces `B` final motions (round 3's lesson, 23.4).
+
+### 28.2 Correctness gate (unchanged from 12.1 / 21.3, applied to this round)
+
+1. `scripts/mlx_align.py plan` and `scripts/mlx_align.py trace` do not regress:
+   `ALIGNMENT OK` / `TRACE OK` with `pose.tokens`, `pose.sampling_uniforms` and
+   `decoder.quantized` at `0.000e+00`.
+2. For `N >= 5` seeds x 6 steps, `pose.tokens` and `pose.sampling_uniforms` are
+   element-for-element identical to the round-3 default.
+3. The **final action deviation is reported even when it is zero**: max `|d|` on
+   `roots` (m), max `|d|` on `rotations_xyzw`, and the worst angle, for the
+   default path and for every `B` of the campaign.
+4. The **token campaign** compares each `B`'s every scenario against the *same
+   scenario run alone* (`B = 1` semantics) on `pose.tokens`,
+   `pose.sampling_uniforms`, the selected duration and the final action, and
+   reports the per-scenario bit-identity rate and the worst deviation.
+5. The **safety margin** is defined exactly as in round 3 so the two rounds are
+   comparable: `safety = max perturbation / min decision margin`, where
+   * *perturbation* is `max |batched - serial|` over the quantity that feeds a
+     discrete decision — the duration logits and the pose logits — and
+   * *margin* is the smallest `top1 - top2` gap of the noised scores of a
+     discrete decision: the 11 allowed durations (argmax) and the 2136-ish
+     Gumbel-noised pose token decisions (round 3's 2.985e-03 / 0.112x).
+   Round 3's value (`0.112x`) is the reference the new one is compared against.
+
+### 28.3 Adoption rule (unchanged from 12.2 / 21.3)
+
+* The two new switches (`bake_root_batch`, `bake_decoder_batch`) are **declared
+  default-off**: they only have meaning on the bake path, and the accepted bake
+  path of round 3 must keep behaving exactly as it did.
+* The **reproducible bake tier** is decided by the campaign, per decision 0006:
+  the largest `B` at which *every* scenario is bit-identical to the same scenario
+  run alone on `pose.tokens`, `pose.sampling_uniforms` and the final action.
+  Anything above it, or any `B` whose campaign was not re-run for the release, is
+  a **fast-draft tier**.  The manifest must record `batch_size`, `bake_tier` and
+  the duration-grouping mode.
+* The **default path (single scenario, real time) must be byte-identical to the
+  one this round started from**: the GPU default document is compared by hash
+  against `out/plan-mlx.json` (`262e77d4...`), and the seam that substitutes a
+  batched stage is `None` on the accepted path.
+
+### 28.4 Measurement discipline (unchanged from 0.3 / 12.3 / 21.3)
+
+* Every measurement records the `uptime` **load average**; the machine is not
+  idle and the report says so.
+* Every A/B pair is **interleaved inside one process** on the identical step
+  sequence, with the arm order **rotated**, and both arms warm up once outside
+  the timed region.
+* `>= 25` steps per arm for per-step items; bake items are repeated **`>= 5`
+  times** and reported as a median, with serial and batched alternating which
+  goes first.
+* Same bundle, same seeds, same backend.
+
+### 28.5 Standing rule
+
+`scripts/mlx_plan.py` is always run with an explicit `--out`.  `out/plan-mlx.json`
+(expected sha256 `262e77d4...`) is never the target of a measurement.
+
+### 28.6 Reporting format fixed in advance
+
+The round-4 results report, in this order: the frozen criteria commit; the
+**stage-throughput table**; the **end-to-end bake table** (mixed and
+duration-homogeneous); the **token-campaign table** (per-`B` identity rate, worst
+deviation, safety margin); the stage-share/ceiling arithmetic; the reproducible
+tier and the manifest fields; the byte-identity evidence for the default path;
+the load average; the remaining bottleneck; and the git state.
