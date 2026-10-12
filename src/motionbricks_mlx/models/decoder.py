@@ -87,10 +87,10 @@ class VqDecoder:
                target_condition: mx.array, has_target_condition: mx.array,
                positions: int) -> mx.array:
         """Return normalized local motion ``(positions * 4, 413)``."""
-        if not nn._option("decoder_fast", False):
+        if not nn._opt("decoder_fast"):
             return self._decode_reference(quantized, external_condition, target_condition,
                                           has_target_condition, positions)
-        if nn._option("decoder_compile", False):
+        if nn._opt("decoder_compile"):
             if self._stage is None:
                 self._stage = nn.StageCache("decoder", self._decode_core)
             return self._stage((positions,), quantized, external_condition,

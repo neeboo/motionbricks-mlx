@@ -107,7 +107,7 @@ class MlxPipeline:
                        sampling_argmax: bool = False,
                        capture_trace: bool = False) -> TransitionResult:
         trace: dict[str, np.ndarray] = {}
-        fast = nn._option("transition_fast", False)
+        fast = nn._opt("transition_fast")
         initial_x = float(constraints.global_root[0, 0])
         initial_z = float(constraints.global_root[0, 2])
 

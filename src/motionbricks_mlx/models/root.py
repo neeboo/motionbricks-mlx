@@ -123,12 +123,12 @@ class RootPlanner:
         Uses the masked-duration embedding (upstream token index 12, i.e.
         ``duration_input_tokens = 18``), independent of the planned token count.
         """
-        if not nn._option("root_fast", False):
+        if not nn._opt("root_fast"):
             return self._duration_logits_reference(
                 global_root, local_root, poses, global_mask, local_mask, pose_mask)
         _, positioned = self._boundary(global_root, local_root, poses,
                                        global_mask, local_mask, pose_mask)
-        if nn._option("root_compile", False):
+        if nn._opt("root_compile"):
             return self._stage("duration", self._duration_core)((), positioned)
         return self._duration_core(positioned)
 
@@ -162,16 +162,16 @@ class RootPlanner:
         transformer is not rebuilt: the caller already ran it, and the accepted
         port discarded this second copy.
         """
-        if not nn._option("root_fast", False):
+        if not nn._opt("root_fast"):
             return self._plan_reference(global_root, local_root, poses, global_mask,
                                         local_mask, pose_mask, requested_tokens,
                                         dense_target, dense_target_mask)
         frame_emb, positioned = self._boundary(global_root, local_root, poses,
                                                global_mask, local_mask, pose_mask)
-        reuse = duration_logits is not None and nn._option("root_dedup", False)
+        reuse = duration_logits is not None and nn._opt("root_dedup")
         if reuse:
             logits = duration_logits
-        elif nn._option("root_compile", False):
+        elif nn._opt("root_compile"):
             logits = self._stage("duration", self._duration_core)((), positioned)
         else:
             logits = self._duration_core(positioned)
@@ -179,7 +179,7 @@ class RootPlanner:
         has_frame = mx.clip(global_mask + local_mask + pose_mask, 0.0, 1.0)
         arguments = (positioned, frame_emb, has_frame, dense_target, dense_target_mask,
                      requested_tokens, requested_tokens * 4)
-        if nn._option("root_compile", False):
+        if nn._opt("root_compile"):
             values = self._stage("tokens_decoder", self._tokens_decoder_core)(
                 (requested_tokens,), *arguments)
         else:

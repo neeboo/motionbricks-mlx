@@ -479,3 +479,61 @@ Interleaved A/B and the token-identity campaign are scratch tools (they lived in
 `/tmp/mbprof/`); the numbers they produced are reproduced above, and
 `tests/test_mlx_optimizations.py` re-checks the identities that the decisions
 depend on.
+
+---
+
+# Round 2 — host-side math (`data/agent.py`)
+
+Frozen at `2026-10-12T21:17:30+08:00`, before any code change of this round, at
+commit `6a09f91d4481d5d14218ffd66655430fa63d7f84`.  Everything in this section is
+the *round-2 adoption criteria*; it was written first and is not edited
+afterwards.  Section 0's criteria stay valid and are **not** relaxed; round 2
+adds the narrower rule that decision
+`docs/decisions/0004-adopt-bit-identical-f32.md` already fixed.
+
+## 12. Frozen round-2 criteria
+
+Subject: the host-side NumPy inside `src/motionbricks_mlx/data/agent.py`
+(19.9 ms of every 55 ms step, 36 %, per section 10) — the file decision 0004
+item 3 authorises this workstream to change — plus the switch defaults.
+
+### 12.1 Correctness gate (unchanged in substance from 0.1)
+
+1. `scripts/mlx_align.py plan` and `scripts/mlx_align.py trace` both still
+   report `ALIGNMENT OK` / `TRACE OK`.
+2. **Token identity.**  For N >= 5 distinct seeds x 6 steps, `pose.tokens` is
+   element-for-element identical to the pre-round-2 f32 baseline (measured with
+   the new default switch state) and `pose.sampling_uniforms` is
+   element-for-element identical.
+3. A host-math rewrite is *allowed* to change float summation order.  When it
+   does, the maximum absolute difference on `roots` (m) and on `rotations` must
+   be reported with its factor of the `mlx_align` tolerance.  **The tokens
+   decide**: a token difference cannot be traded for speed.
+4. Determinism: the same seed twice stays bit-identical.
+
+### 12.2 Adoption rule (decision 0004, not a relaxation)
+
+* A change that is **token-identical and does not regress alignment** is
+  **adopted by default** as soon as the paired p50 improves by **>= 1.05x**.
+  This is the decision 0004 rule for zero-risk bit-identical work; it is
+  deliberately *not* section 0.2's 1.5x, which stays on the books for
+  risk-carrying candidates.
+* A change that introduces *any* token difference is **rejected / default OFF**,
+  with its admissible scope named (`real-time` / `batch-bake` / `offline-only`).
+* A change with a paired p50 < 1.05x is recorded as rejected with its number.
+
+### 12.3 Measurement discipline (unchanged from 0.3)
+
+Load average recorded with every measurement; every A/B pair interleaved inside
+one process on the identical step sequence with the arm order rotated; >= 25
+steps; p50/p90/max; same bundle, same seeds, same backend.
+
+### 12.4 Order of work (fixed before measuring)
+
+1. **Fewer calls**: batch the per-joint / per-frame loops into one array op,
+   preallocate and reuse buffers.
+2. **Move the maths into the MLX graph** (switchable), which can fuse and remove
+   host<->device round trips.
+3. **Only if host is still the bottleneck after 1 and 2**: a compiled kernel,
+   `mx.fast.metal_kernel` first (one dispatch, no C-extension build/distribution
+   cost).  No Cython / pybind11.

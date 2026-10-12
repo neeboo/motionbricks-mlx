@@ -32,21 +32,48 @@ LAYER_NORM_EPSILON = 1.0e-5  # ggml_norm(ctx, x, 1.0e-5F) in src/root.cpp:59
 # the accepted (pre-optimization) behaviour stays reproducible and each A/B
 # measurement can be rerun from a single process:
 #
-#     MOTIONBRICKS_MLX_OPT=1                   -> every optimization
-#     MOTIONBRICKS_MLX_OPT=transition_fast=1   -> just one of them
+#     MOTIONBRICKS_MLX_OPT=0                   -> back to the pre-optimization path
+#     MOTIONBRICKS_MLX_OPT=0,transition_fast=1 -> the old path plus just one switch
 #
-# **The defaults are OFF.**  `docs/optimization-report.md` fixed the adoption
-# rule before the work: a candidate is adopted only at >= 1.5x per-step p50 or
-# >= 2x cold start / resident memory.  The float32 optimizations reach 1.22-1.24x
-# and are therefore recorded as *rejected*, and a rejected optimization must not
-# silently become the default.  They are bit-exact and deterministic (see the
-# report and tests/test_mlx_optimizations.py); enabling them is one environment
-# variable, and the measured numbers are in the report.
+# **The defaults are ON**, by decision
+# `docs/decisions/0004-adopt-bit-identical-f32.md` item 1.
+# `docs/optimization-report.md` section 0 fixed the adoption rule before that
+# work (>= 1.5x per-step p50 or >= 2x cold start / resident memory) and the
+# float32 group reaches only 1.22-1.24x, which is why section 8 records every
+# item as *rejected* under that rule.  The lead then adopted the **float32 group
+# only** as a default-on row: it passes the correctness gate at its highest
+# grade (5 seeds x 6 steps, 30/30 `pose.tokens` bit-identical,
+# `pose.sampling_uniforms` element-identical, `mlx_align` plan/trace OK,
+# 0 differing values in the regenerated default plan document), so there is no
+# correctness risk to trade against the speed gate.  Quantization stays off
+# (`MOTIONBRICKS_MLX_QUANT` unset) and is **not** token-identical.
 #
 # The value is read on every call (not at import time) so that both arms can be
 # interleaved inside one process.  Unknown names keep their declared default, so
 # adding a switch cannot silently change an existing run.
 _FALSY = frozenset(("", "0", "false", "no", "off"))
+
+# The declared default of every switch, in the state decision 0004 adopted.
+# ``_opt`` reads this table, so a call site cannot drift from it and the tests
+# can assert the whole group in one place.  The float32 group is ``True``
+# (adopted default-on, bit-identical on the GPU backend); anything that changes
+# numerics keeps ``False``.
+OPT_DEFAULTS: dict[str, bool] = {
+    "transition_fast": True,
+    "pose_fast": True,
+    "pose_compile": True,
+    "root_fast": True,
+    "root_compile": True,
+    "root_dedup": True,
+    "decoder_fast": True,
+    "decoder_compile": True,
+    "sampling_vector": True,
+}
+
+
+def _opt(name: str) -> bool:
+    """``_option(name, OPT_DEFAULTS[name])`` — the switch as configured."""
+    return _option(name, OPT_DEFAULTS.get(name, False))
 
 
 def _option(name: str, default: bool = False) -> bool:
@@ -59,8 +86,14 @@ def _option(name: str, default: bool = False) -> bool:
     * ``name=1`` / ``name=0`` overrides one optimization, and ``*=1`` / ``*=0``
       overrides all of them.
 
-    So ``MOTIONBRICKS_MLX_OPT=pose_compile=1`` turns on only the pose planner's
-    compiled graph, on top of the accepted baseline.
+    Because the items are applied **in order**, ``MOTIONBRICKS_MLX_OPT=0``
+    followed later by one name re-enables just that one, e.g.
+    ``MOTIONBRICKS_MLX_OPT=0,pose_compile=1`` is the pre-decision-0004 behaviour
+    of "the accepted path plus only the pose planner's compiled graph".
+
+    ``default`` is the value used when ``MOTIONBRICKS_MLX_OPT`` is unset; the
+    call sites declare ``True`` for the float32 group adopted by decision 0004
+    and ``False`` for anything else.
     """
     raw = os.environ.get("MOTIONBRICKS_MLX_OPT")
     if raw is None:

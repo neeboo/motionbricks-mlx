@@ -190,11 +190,11 @@ class PosePlanner:
              pose_condition: mx.array, has_pose_condition: mx.array,
              positions: int, num_tokens: int) -> mx.array:
         """Return per-position codebook logits ``(positions, 80)``."""
-        if not nn._option("pose_fast", False):
+        if not nn._opt("pose_fast"):
             return self._plan_reference(pose_tokens, local_root_values, pose_condition,
                                         has_pose_condition, positions, num_tokens)
         tokens = pose_tokens if isinstance(pose_tokens, mx.array) else mx.array(pose_tokens)
-        if nn._option("pose_compile", False):
+        if nn._opt("pose_compile"):
             if self._stage is None:
                 self._stage = nn.StageCache("pose", self._core)
             return self._stage((positions, num_tokens), tokens, local_root_values,

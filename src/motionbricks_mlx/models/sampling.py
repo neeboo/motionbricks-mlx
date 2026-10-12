@@ -63,8 +63,8 @@ def _uniforms_vectorised(seed: int, count: int) -> np.ndarray:
 
 
 def uniforms(seed: int, count: int) -> np.ndarray:
-    from .nn import _option      # local import: keeps this module MLX-free
-    if _option("sampling_vector", False):
+    from .nn import _opt     # local import: keeps this module MLX-free
+    if _opt("sampling_vector"):
         return _uniforms_vectorised(seed, count)
     return _uniforms_scalar(seed, count)
 

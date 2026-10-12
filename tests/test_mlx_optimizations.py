@@ -68,12 +68,18 @@ def restore_switches():
 
 def test_option_grammar():
     import os
+    T = [True] * 9
     cases = {
-        None: [False] * 9,                 # the default is the accepted path
+        # Decision 0004 item 1: the float32 group is the default path.
+        None: T,
+        "1": T,
         "0": [False] * 9,
-        "1": [True] * 9,
-        "pose_compile=1": [False, True, False, False, False, False, False, False, False],
+        # A bare ``name=0`` overrides one switch of the default-on group.
+        "pose_compile=0": [True, False, True, True, True, True, True, True, True],
         "1,pose_compile=0": [True, False, True, True, True, True, True, True, True],
+        # The old "accepted path plus one switch" is still expressible: the
+        # global token comes first and is applied in order.
+        "0,pose_compile=1": [False, True, False, False, False, False, False, False, False],
         "*=0,sampling_vector=1": [False] * 8 + [True],
     }
     for value, expected in cases.items():
@@ -81,15 +87,33 @@ def test_option_grammar():
             os.environ.pop("MOTIONBRICKS_MLX_OPT", None)
         else:
             os.environ["MOTIONBRICKS_MLX_OPT"] = value
-        got = [nn._option(name) for name in SWITCHES]
+        got = [nn._opt(name) for name in SWITCHES]
         assert got == expected, f"{value!r} -> {got}"
 
 
-def test_default_is_the_accepted_unoptimized_path():
-    """A rejected optimization must not become the default silently."""
+def test_default_is_the_adopted_optimized_path():
+    """Decision 0004 item 1: the bit-identical f32 group is default-on.
+
+    Section 8 of the report records every item as *rejected* under the section-0
+    performance gate (>= 1.5x); the lead then adopted this group as a default-on
+    row because it passes the correctness gate at its highest grade.  Both facts
+    hold at once, and this test pins the second one so a later refactor cannot
+    silently revert it.
+    """
     import os
     os.environ.pop("MOTIONBRICKS_MLX_OPT", None)
-    assert [nn._option(name) for name in SWITCHES] == [False] * 9
+    assert [nn._opt(name) for name in SWITCHES] == [True] * 9
+    # Every switch the call sites can read has a declared default, and only the
+    # bit-identical float32 group is on.
+    assert set(nn.OPT_DEFAULTS) == set(SWITCHES)
+    assert all(nn.OPT_DEFAULTS.values())
+
+
+def test_off_restores_the_pre_optimization_path():
+    """``MOTIONBRICKS_MLX_OPT=0`` is the accepted pre-optimization behaviour."""
+    import os
+    os.environ["MOTIONBRICKS_MLX_OPT"] = "0"
+    assert [nn._opt(name) for name in SWITCHES] == [False] * 9
 
 
 # --- vectorised sampling stream -------------------------------------------
