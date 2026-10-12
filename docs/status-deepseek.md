@@ -8,4 +8,7 @@
   见 `docs/decisions/0001-python-environment.md`；`scripts/check_env.py` 打 READY。
 - 已查既有实现：见 `docs/decisions/0002-prior-art.md`——MotionBricks 已有 GGML 版（295★）与 Core ML 版，
   MLX 侧只有 VQ-VAE 零件、**没有动作生成**。定位据此改为"MLX 做训练与数据，产物导出给既有运行时或烘焙进引擎"。
-- 仍等人类两个决定：① 下游运行时先接哪个（Core ML / GGML / 直接烘焙进 Unity）；② 根朝向是否保留完整姿态。
+- 下游运行时已定：`motion-bricks.cpp`（Apache-2.0、GGML、GGUF 边界），见 `docs/decisions/0003-downstream-runtime.md`。
+- 待办（第 1 步之后）：① 确认 macOS/Apple Silicon 的 CMake preset 与 Metal 路径能否跑通它的 bundle；
+  ② 把它的 GGUF schema 约束写进动作模型设计——我们自训的权重必须导得出去。
+- 仍等人类一个决定：动作表示里根朝向是否保留完整姿态（v0 只有偏航）。
