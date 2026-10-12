@@ -280,3 +280,51 @@ decision 0004 采用整组 f32 优化，我不从已裁定默认里偷偷摘开�
 `training/**`、`train_*.py`、`eval/**`、`eval_*.py`、`motion-representation.md`、`README.md`、
 `NOTICE`、`LICENSE`、`pyproject.toml` 未动；`eval/` 未跟踪也未提交；`mlx_plan.py`/`mlx_align.py`
 语义未改；所有 `mlx_plan.py` 调用都显式带 `--out`；参考仓库只读；**无 push**。
+
+---
+
+## 2026-10-12 · Round 4（同一天）：批 root 与 decoder 阶段，端到端烘焙 1.25× → 2.8×
+
+**任务**：round 3 证明只批 pose（占每步 ~23 %）时端到端上限约 1.25×；本轮的下一档是批 root
+（512 维 transformer 规划 + 残差扩张卷积解码）与 decoder（两级 VQ 解码，latent 256）。
+
+**先钉判据再动手**：`docs/optimization-report.md` 第 28 节（commit `94beb41`，本轮第一个 commit，
+事后未改）。两个新开关 `bake_root_batch` / `bake_decoder_batch` 声明**默认关闭**。
+
+**做法**：round 3 的单参数 seam 只够替换一个前向。三个阶段是一条经 host glue 串联的依赖链
+（pose 的输入是批量 root 的输出，decoder 的输入是批量 pose 的输出），所以新增 **stage driver**：
+每个场景用 `bake=driver` 跑 `run_transition`，某一阶段的行还没算好时 driver 记下该阶段输入并抛
+`BakeSuspend` 提前结束；同一 stage 边界上所有场景都到齐后，**一次** vmap 前向算出所有行，再继续。
+代价是部分 pass 会重跑 host glue——第 33 节量化了这笔代价（3.73 ms/场景，占批量时间 38 %）。
+
+**结果**
+
+- **端到端（B=16）**：混合 2.244×、同 duration **2.812×**（87.24 场景/秒）；串行 515.70 ms → 批量 183.41 ms。
+  阶段拆分：pose-only 1.499× → +root 2.133× → +decoder 2.812×。阶段层 B=16 同 duration：
+  root 10.82×、pose 7.61×、decoder 9.67×。**B=1 比串行慢**（0.895–1.008×），不该用于烘焙。
+- **战役**：59/59 场景 token / uniform / duration **逐位一致，0/4600 个决策不同**；
+  但**最终动作不再逐位**（roots ≤ 2.027e-06 m、rotations ≤ 2.753e-05，分别是 `mlx_align` 容差的
+  2.0e-03× 与 1.4e-02×）。round 3 的"恰好 0"是只批 pose 的副产品。
+- **安全裕度（本轮最重要的数字）**：对照臂用本轮代码复算 round 3，得到 `3.357e-04 / 2.985e-03
+  = 0.1124×`，与 round 3 报告的 `3.357e-04 / 0.112×` **完全一致**，证明两轮同一把尺子。
+  全阶段后：同 duration B=16 = **0.4089×**，混合 B=16 = **1.0426×（无余量）**。
+  即批量 root 的输出经 predicted local root / pose condition 进入 pose 规划输入，把扰动放大
+  **3.6×（同 duration）到 9.3×（混合）**；余量本身没变。**混合 B=16 通过了战役却没有裕度**——
+  这是 0006 第 5 条警告的数据相关性，也是本轮提案 0007 收紧档位定义的理由（发布档 B ≤ 8）。
+- **默认路径**：两个 seam 默认 `None`。GPU 文档与 `out/plan-mlx-gpu.json`（`ccda1952…`）、
+  CPU 文档与 `out/plan-mlx.json`（`262e77d4…`）**逐字节一致**；`mlx_align plan/trace` OK
+  （tokens / uniforms / quantized 全 0）；5 seed × 6 步 token 门通过；`pytest` **199 passed / 1 skipped**
+  （本轮起点 192/1）；C 线的 `scripts/eval_gate.py --no-collect` 仍然 **GATE PASS**（只读调用，未改未提交）。
+- **下一步该攻哪里（有测量支撑）**：B=16 同 duration 每场景 9.92 ms = 批量阶段 2.58 + host pass 3.62
+  + driver 重跑 3.73。① 把 driver 换成单遍编排（把 glue 抽成可调用步骤）→ 约 28.37/6.19 = **4.6×**，
+  不用碰批量前向；② 地板是 host 侧 3.62 ms/场景（`decode_motion` + agent 数学 + 归一化），
+  无穷快的前向也只能到约 7.8×。**阶段已经不是瓶颈了**。
+
+**红线遵守**：只改 `src/motionbricks_mlx/models/**`（`bake/root/decoder/nn/transition`）、
+`src/motionbricks_mlx/data/agent.py`（抽出 `constraints_for`）、`scripts/mlx_bench.py`（追加
+`--bake-stages` / `--bake-metrics`，既有语义不变）、`tests/test_mlx_{bake,optimizations}.py`、
+`docs/optimization-report.md`（追加第 28–34 节）、本文件、新增 `docs/decisions/0007-...md`（**提案**）；
+`training/**`、`train_*.py`、`eval/**`、`scripts/eval_*.py`、`tests/test_eval_*.py`、
+`motion-representation.md`、`README.md`、`NOTICE`、`LICENSE`、`pyproject.toml` 未动；
+C 线脚本只读调用；`mlx_plan.py`/`mlx_align.py` 语义未改；所有 `mlx_plan.py` 调用都显式带 `--out`；
+参考仓库只读；**无 push**。
