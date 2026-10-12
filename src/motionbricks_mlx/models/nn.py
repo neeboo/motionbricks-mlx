@@ -79,6 +79,12 @@ OPT_DEFAULTS: dict[str, bool] = {
     "decoder_defer": False,
     "pred_local_defer": False,
     "root_boundary_reuse": False,
+    # Round-4 batch-bake switches.  They have meaning only on the bake path
+    # (`models/bake.py`), never on a single real-time plan, and they are declared
+    # **off** so that the accepted round-3 bake -- the pose stage only -- is what
+    # runs unless a caller opts in.
+    "bake_root_batch": False,
+    "bake_decoder_batch": False,
 }
 
 # Switches whose *effective* default is decided by the execution backend

@@ -1078,17 +1078,14 @@ class Agent:
             rotations[frame] = self.current_motion.rotations_xyzw[source]
         self.context_roots, self.context_rotations = roots, rotations
 
-    def plan(self, command: Command, style: Style,
-             capture_trace: bool = False,
-             pose_logits=None) -> tuple[Motion, dict]:
-        """``plan_agent_impl`` (src/agent.cpp:419-455).
+    def constraints_for(self, command: Command, style: Style):
+        """``(frame, TransitionConstraints)`` -- exactly what :meth:`plan` runs.
 
-        ``capture_trace`` forwards to :meth:`MlxPipeline.run_transition` so a
-        caller can diff the discrete ``pose.tokens``; it is off by default
-        because it copies every intermediate stage.  ``pose_logits`` is the
-        round-3 bake seam (see ``MlxPipeline.run_transition``): a batch bake
-        supplies the pose planner's output and the stage is skipped, while all
-        the surrounding agent maths stays the accepted code.
+        Split out for the round-4 batch bake: a stage-synchronised bake has to
+        run the *same* transition several times (once per stage boundary), and
+        rebuilding the constraints per pass would rebuild them from an agent
+        context that the extra passes must not disturb.  ``plan`` calls this and
+        so does the bake, so the two cannot drift apart.
         """
         if self.context_frames < 4:
             self.reset(style)
@@ -1099,18 +1096,35 @@ class Agent:
                                         canonical_command, style, self.neutral_joints,
                                         self.parents)
         from ..models.transition import TransitionConstraints
+        return frame, TransitionConstraints(**{key: constraints[key] for key in (
+            "global_root", "local_root", "poses", "has_local_root",
+            "allowed_tokens", "target_root_translations",
+            "target_local_rotations_xyzw")},
+            has_global_root=np.ones(8, np.uint8),
+            has_poses=np.ones(8, np.uint8))
+
+    def plan(self, command: Command, style: Style,
+             capture_trace: bool = False,
+             pose_logits=None, bake=None) -> tuple[Motion, dict]:
+        """``plan_agent_impl`` (src/agent.cpp:419-455).
+
+        ``capture_trace`` forwards to :meth:`MlxPipeline.run_transition` so a
+        caller can diff the discrete ``pose.tokens``; it is off by default
+        because it copies every intermediate stage.  ``pose_logits`` is the
+        round-3 bake seam (see ``MlxPipeline.run_transition``): a batch bake
+        supplies the pose planner's output and the stage is skipped, while all
+        the surrounding agent maths stays the accepted code.  ``bake`` is the
+        round-4 stage driver, which supersedes ``pose_logits`` for a bake that
+        batches more than the pose stage.
+        """
+        frame, constraints = self.constraints_for(command, style)
         result = self.pipeline.run_transition(
-            TransitionConstraints(**{key: constraints[key] for key in (
-                "global_root", "local_root", "poses", "has_local_root",
-                "allowed_tokens", "target_root_translations",
-                "target_local_rotations_xyzw")},
-                has_global_root=np.ones(8, np.uint8),
-                has_poses=np.ones(8, np.uint8)),
+            constraints,
             seed=command.seed, sampling_argmax=command.sampling_argmax,
-            capture_trace=capture_trace, pose_logits=pose_logits)
+            capture_trace=capture_trace, pose_logits=pose_logits, bake=bake)
         motion = Motion(result.roots, result.rotations_xyzw,
-                        constraints["target_root_translations"],
-                        constraints["target_local_rotations_xyzw"])
+                        constraints.target_root_translations,
+                        constraints.target_local_rotations_xyzw)
         restore_world(motion, frame)
         if not command.skip_context_blend:
             apply_context_blend(self.context_roots, self.context_rotations, motion)

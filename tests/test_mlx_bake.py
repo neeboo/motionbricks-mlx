@@ -165,3 +165,160 @@ def test_round3_sync_candidates_are_declared_off():
     assert nn.OPT_DEFAULTS["decoder_defer"] is False
     assert nn.OPT_DEFAULTS["pred_local_defer"] is False
     assert nn.OPT_DEFAULTS["root_boundary_reuse"] is False
+
+
+# ---------------------------------------------------------------------------
+# Round 4: the root and decoder stages
+# ---------------------------------------------------------------------------
+
+ROUND4_OPT = "bake_root_batch=1,bake_decoder_batch=1"
+
+
+def test_bake_stage_switches_are_declared_off():
+    """The two round-4 switches only mean something on the bake path.
+
+    Round 3's bake must keep behaving exactly as it did, so the new stages are
+    opt-in and the declared default is the round-3 stage set.
+    """
+    assert nn.OPT_DEFAULTS["bake_root_batch"] is False
+    assert nn.OPT_DEFAULTS["bake_decoder_batch"] is False
+
+
+def test_batched_stages_follows_the_switches(monkeypatch):
+    """``batched_stages`` is the switch state, and pose is always included."""
+    monkeypatch.delenv("MOTIONBRICKS_MLX_OPT", raising=False)
+    assert bake.batched_stages() == frozenset({"pose"})
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", "bake_root_batch=1")
+    assert bake.batched_stages() == frozenset({"pose", "root"})
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND4_OPT)
+    assert bake.batched_stages() == frozenset({"pose", "root", "decoder"})
+
+
+@NEEDS
+def test_batched_root_and_decoder_are_real_batches_with_a_documented_band(
+        monkeypatch):
+    """Same band rule as the pose batch: genuine batches, never bitwise serial.
+
+    Round 3 pinned the pose logits at ~1e-4.  The root planner's output and the
+    decoder's output are smaller-magnitude quantities, so their bands are tighter
+    but still strictly non-zero -- which is what makes the campaign necessary
+    rather than optional, and what fails a change that silently makes the
+    lowering exact.
+    """
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND4_OPT)
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(2)
+    reference, _ = bake.record_serial(pipeline, bundle, batch, capture_stages=True)
+    assert reference[0].tokens == reference[1].tokens, "a batch needs one duration"
+    result = bake.drive_batch(pipeline, bundle, batch, bake.batched_stages())
+    perturbations = bake.stage_perturbations(reference, result.runs)
+    # duration logits: a 12-wide head, so the deviation is the smallest of all
+    assert 0.0 < perturbations["duration_logits"] < 1.0e-3
+    # root values: normalised (frames, 5) planner output
+    assert 0.0 < perturbations["root_values"] < 1.0e-4
+    # pose logits: the compounded one, amplified by the root condition
+    assert 0.0 < perturbations["pose_logits"] < 1.0e-1
+    # decoder output: normalised 413-wide motion
+    assert 0.0 < perturbations["decoded"] < 1.0e-2
+
+
+@NEEDS
+def test_stage_driver_reproduces_the_reference_arm(monkeypatch):
+    """The campaign's claim with every stage batched: tokens, uniforms, duration.
+
+    The *action* is deliberately not asserted bitwise here -- batching the root
+    and decoder stages perturbs the conditions that reach the final decode, so
+    the action deviation is a measured quantity reported by the campaign, not a
+    property of the seam.
+    """
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND4_OPT)
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(2)
+    reference, _ = bake.record_serial(pipeline, bundle, batch, capture_stages=True)
+    result = bake.drive_batch(pipeline, bundle, batch, bake.batched_stages())
+    assert len(result.runs) == len(batch)
+    # Two boundaries per neural stage, and one suspension per scenario per
+    # boundary: the driver never skips a stage it owns.
+    assert result.suspensions >= 2 * len(batch)
+    assert set(result.stage_sizes) == {"probe", "plan", "pose", "decoder"}
+    comparison = bake.compare([record.run for record in reference], result.runs)
+    assert comparison["token_identical"] == len(batch)
+    assert comparison["uniform_identical"] == len(batch)
+    assert comparison["selected_identical"] == len(batch)
+    assert comparison["differing_tokens"] == 0
+    # The action moves, but only by float32 round-off: roots are in metres and
+    # the alignment tolerance for them is 1e-3, so this is orders inside it.
+    assert 0.0 < comparison["worst_roots_m"] < 1.0e-4
+    assert 0.0 < comparison["worst_rotations"] < 1.0e-3
+
+
+@NEEDS
+def test_driver_safety_numbers_are_reported_and_below_one(monkeypatch):
+    """The perturbation/margin ratio is the number the tier rule rests on."""
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND4_OPT)
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(2)
+    reference, _ = bake.record_serial(pipeline, bundle, batch, capture_stages=True)
+    result = bake.drive_batch(pipeline, bundle, batch, bake.batched_stages())
+    perturbations = bake.stage_perturbations(reference, result.runs)
+    margins = bake.decision_margins(reference)
+    safety = bake.safety_factor(perturbations, margins)
+    assert margins["pose_margin"] > 0.0
+    assert margins["duration_margin"] > 0.0
+    assert safety["pose_perturbation"] > 0.0
+    # Batching is never bitwise, and it must stay inside the decision margin on
+    # this fixture: a ratio above 1 would mean the campaign had already flipped a
+    # token somewhere.
+    assert 0.0 < safety["pose_ratio"] < 1.0
+
+
+@NEEDS
+def test_constraints_for_is_what_plan_runs():
+    """``Agent.plan`` and the bake must build identical constraints.
+
+    The round-4 bake runs one scenario through ``run_transition`` several times,
+    so a second, drifting construction of the boundary conditions would silently
+    make the batched arm incomparable.  ``plan`` therefore calls
+    ``constraints_for`` too, and this pins that the object it hands to the
+    pipeline is the one the bake recorded.
+    """
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    scenario = scenarios(1)[0]
+    agent = A.Agent(pipeline, bundle.neutral_joints, bundle.joint_parents)
+    agent.reset(scenario.style)
+    _, before = agent.constraints_for(scenario.command(), scenario.style)
+    # Two calls in a row agree, which is the invariant the bake rests on: it
+    # runs `run_transition` several times per scenario and every pass must see
+    # one boundary set.  (The context only moves once `plan` finishes, and the
+    # bake calls `plan` exactly once per scenario.)
+    _, again = agent.constraints_for(scenario.command(), scenario.style)
+    assert np.array_equal(before.poses, again.poses)
+    assert np.array_equal(before.target_root_translations, again.target_root_translations)
+    assert np.array_equal(before.allowed_tokens, again.allowed_tokens)
+
+    seen: dict[str, object] = {}
+    original = pipeline.run_transition
+
+    def spy(constraints, *args, **kwargs):
+        # Snapshot *before* returning: ``Motion`` keeps this object's arrays and
+        # ``restore_world`` / ``apply_context_blend`` rewrite them in place, so
+        # reading it afterwards would compare a mutated object.
+        seen["constraints"] = {field: np.array(getattr(constraints, field),
+                                               copy=True) for field in (
+            "global_root", "local_root", "poses", "has_local_root",
+            "allowed_tokens", "target_root_translations",
+            "target_local_rotations_xyzw")}
+        return original(constraints, *args, **kwargs)
+
+    pipeline.run_transition = spy
+    try:
+        agent.plan(scenario.command(), scenario.style)
+    finally:
+        pipeline.run_transition = original
+
+    for field, value in seen["constraints"].items():
+        assert np.array_equal(getattr(before, field), value), field

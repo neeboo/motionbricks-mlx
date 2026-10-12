@@ -27,6 +27,8 @@ class VqDecoder:
     def __init__(self, weights: Weights):
         self.w = weights
         self._stage: nn.StageCache | None = None
+        # Round-4 batch bake: one compiled vmapped variant per token count.
+        self._batch_variants: dict[tuple, object] = {}
 
     def _conv(self, x: mx.array, name: str, padding: int, dilation: int) -> mx.array:
         return nn.conv1d_time(x, self.w[f"{name}.weight"], self.w[f"{name}.bias"],
@@ -97,6 +99,26 @@ class VqDecoder:
                                target_condition, has_target_condition, positions)
         return self._decode_core(quantized, external_condition, target_condition,
                                  has_target_condition, positions)
+
+    def decode_batch(self, quantized: mx.array, external_condition: mx.array,
+                     target_condition: mx.array, has_target_condition: mx.array,
+                     positions: int) -> mx.array:
+        """``B`` VQ decodes in one forward: ``(B, positions * 4, 413)``.
+
+        ``mx.compile`` + ``mx.vmap`` over the *single-scenario* body, so the same
+        caveat as :meth:`PosePlanner.plan_batch` and
+        :meth:`RootPlanner.plan_values_batch` applies: batched primitives are not
+        bitwise equal to the serial forward.  ``positions`` is a trace-time
+        constant, so a batch must be duration-homogeneous.
+        """
+        key = (positions,)
+        variant = self._batch_variants.get(key)
+        if variant is None:
+            body = lambda *a: self._decode_core(*a, positions)
+            variant = mx.compile(mx.vmap(body, in_axes=(0, 0, 0, 0)))
+            self._batch_variants[key] = variant
+        return variant(quantized, external_condition, target_condition,
+                       has_target_condition)
 
     def _decode_reference(self, quantized: mx.array, external_condition: mx.array,
                           target_condition: mx.array, has_target_condition: mx.array,

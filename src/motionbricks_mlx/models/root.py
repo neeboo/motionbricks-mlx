@@ -48,6 +48,11 @@ class RootPlanner:
         self._middle_rows: dict[int, mx.array] = {}
         self._position_tables: dict[int, mx.array] = {}
         self._stages: dict[str, nn.StageCache] = {}
+        # Round-4 batch bake: one compiled vmapped variant per batchable stage,
+        # keyed by the token count (the only shape that varies).  ``plan`` is
+        # keyed by token count too, so a batch can only hold scenarios that
+        # selected the same duration.
+        self._batch_variants: dict[tuple, object] = {}
 
     # -- helpers ---------------------------------------------------------
 
@@ -212,6 +217,67 @@ class RootPlanner:
         else:
             values = self._tokens_decoder_core(*arguments)
         return logits, values
+
+    # -- round-4 batched stage (bake path only) ---------------------------
+
+    def _probe_core(self, global_root: mx.array, local_root: mx.array, poses: mx.array,
+                    global_mask: mx.array, local_mask: mx.array,
+                    pose_mask: mx.array) -> mx.array:
+        """The duration probe as one unbatched body: ``(8, ...)`` -> ``(12,)``."""
+        _, positioned = self._boundary(global_root, local_root, poses,
+                                       global_mask, local_mask, pose_mask)
+        return self._duration_core(positioned)
+
+    def duration_logits_batch(self, global_root: mx.array, local_root: mx.array,
+                              poses: mx.array, global_mask: mx.array,
+                              local_mask: mx.array, pose_mask: mx.array) -> mx.array:
+        """``B`` duration probes in one forward: ``(B, 12)`` logits.
+
+        Every scenario's boundary tensors have the same shape, so the probe needs
+        no grouping.  Built the same way as :meth:`PosePlanner.plan_batch`
+        (``mx.compile`` + ``mx.vmap`` over the *single-scenario* body), so it is
+        subject to the same caveat: the lowered batched primitives are **not**
+        bitwise equal to the serial forward even at ``B = 1``.
+        """
+        variant = self._batch_variants.get(("probe",))
+        if variant is None:
+            variant = mx.compile(mx.vmap(self._probe_core, in_axes=(0, 0, 0, 0, 0, 0)))
+            self._batch_variants[("probe",)] = variant
+        return variant(global_root, local_root, poses, global_mask, local_mask, pose_mask)
+
+    def _plan_core(self, global_root: mx.array, local_root: mx.array, poses: mx.array,
+                   global_mask: mx.array, local_mask: mx.array, pose_mask: mx.array,
+                   dense_target: mx.array, dense_target_mask: mx.array,
+                   _tokens: int | None = None) -> mx.array:
+        """The token transformer + convolutional decoder as one unbatched body."""
+        frame_emb, positioned = self._boundary(global_root, local_root, poses,
+                                               global_mask, local_mask, pose_mask)
+        has_frame = mx.clip(global_mask + local_mask + pose_mask, 0.0, 1.0)
+        return self._tokens_decoder_core(positioned, frame_emb, has_frame, dense_target,
+                                         dense_target_mask, _tokens, _tokens * 4)
+
+    def plan_values_batch(self, global_root: mx.array, local_root: mx.array,
+                          poses: mx.array, global_mask: mx.array, local_mask: mx.array,
+                          pose_mask: mx.array, dense_target: mx.array,
+                          dense_target_mask: mx.array,
+                          requested_tokens: int) -> mx.array:
+        """``B`` root planners in one forward: ``(B, requested_tokens * 4, 5)``.
+
+        The duration logits are *not* part of this body: :meth:`plan` computes
+        them only to return them, and ``_tokens_decoder_core`` never reads them,
+        so a batch that already has its duration from
+        :meth:`duration_logits_batch` does not need them re-derived.
+        ``requested_tokens`` is a trace-time constant, so one compiled variant
+        exists per token count and a batch must be duration-homogeneous.
+        """
+        key = ("plan", requested_tokens)
+        variant = self._batch_variants.get(key)
+        if variant is None:
+            body = lambda *a: self._plan_core(*a, _tokens=requested_tokens)
+            variant = mx.compile(mx.vmap(body, in_axes=(0,) * 8))
+            self._batch_variants[key] = variant
+        return variant(global_root, local_root, poses, global_mask, local_mask,
+                       pose_mask, dense_target, dense_target_mask)
 
     def _tokens_decoder_core(self, positioned: mx.array, frame_emb: mx.array,
                              has_frame: mx.array, dense_target: mx.array,

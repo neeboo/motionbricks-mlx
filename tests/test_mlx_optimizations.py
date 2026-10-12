@@ -35,10 +35,13 @@ HAVE_BUNDLE = (MLX_BUNDLE / "manifest.json").is_file()
 # The full switch set, in the order used by the report.
 SWITCHES = ("pose_fast", "pose_compile", "root_fast", "root_compile", "root_dedup",
             "decoder_fast", "decoder_compile", "transition_fast", "sampling_vector",
-            "decoder_defer", "pred_local_defer", "root_boundary_reuse")
+            "decoder_defer", "pred_local_defer", "root_boundary_reuse",
+            "bake_root_batch", "bake_decoder_batch")
 # Switches whose declared default is on (decision 0004's float32 group).  The
 # three round-3 host-synchronisation candidates measured below the section-21
-# adoption bar and are therefore declared off (report section 24).
+# adoption bar and are therefore declared off (report section 24), and the two
+# round-4 bake switches have meaning only on the bake path, so they are declared
+# off too: the accepted round-3 bake is what runs unless a caller opts in.
 DECLARED_ON = ("pose_fast", "pose_compile", "root_fast", "root_compile", "root_dedup",
                "decoder_fast", "decoder_compile", "transition_fast", "sampling_vector")
 

@@ -147,7 +147,8 @@ class MlxPipeline:
     def run_transition(self, constraints: TransitionConstraints, seed: int,
                        sampling_argmax: bool = False,
                        capture_trace: bool = False,
-                       pose_logits: mx.array | None = None) -> TransitionResult:
+                       pose_logits: mx.array | None = None,
+                       bake=None) -> TransitionResult:
         """Run one transition.
 
         ``pose_logits`` is the round-3 *bake seam*: when a caller supplies the pose
@@ -155,6 +156,14 @@ class MlxPipeline:
         bake can substitute a batched forward while every other stage -- sampling,
         the codebook gather, the decoder, the motion decode -- runs the accepted
         code.  ``None`` (the default) is the accepted path, byte for byte.
+
+        ``bake`` is the round-4 *stage driver* (see
+        :mod:`motionbricks_mlx.models.bake`): an object with ``duration``,
+        ``plan``, ``pose`` and ``decoder`` methods that stands in for the four
+        neural forwards and may raise ``BakeSuspend`` to end the run early so a
+        batch can be synchronised at a stage boundary.  ``None`` (the default) is
+        again the accepted path: neither seam is entered, so the two are inert
+        unless a caller asks for them.
         """
         trace: dict[str, np.ndarray] = {}
         fast = nn._opt("transition_fast")
@@ -224,7 +233,12 @@ class MlxPipeline:
         if enabled == 1:
             tokens = 6 + int(np.flatnonzero(allowed)[0])
         elif enabled > 1:
-            if reuse_boundary:
+            if bake is not None:
+                mx_duration_logits = bake.duration(
+                    mx.array(normalized_global), mx.array(normalized_local),
+                    mx.array(normalized_poses), mx.array(global_mask),
+                    mx.array(local_mask), mx.array(pose_mask))
+            elif reuse_boundary:
                 mx_duration_logits, boundary = self.root.probe(
                     mx.array(normalized_global), mx.array(normalized_local),
                     mx.array(normalized_poses), mx.array(global_mask),
@@ -264,11 +278,20 @@ class MlxPipeline:
                 # normalized too (src/root.cpp:464-469).
                 dense_target[frame] = normalized_global[boundary_index]
                 dense_target_mask[frame, 0] = 1.0 if constraints.has_global_root[boundary_index] else 0.0
-        _, predicted_global = self.root.plan(
-            mx.array(normalized_global), mx.array(normalized_local), mx.array(normalized_poses),
-            mx.array(global_mask), mx.array(local_mask), mx.array(pose_mask),
-            tokens, mx.array(dense_target), mx.array(dense_target_mask),
-            duration_logits=mx_duration_logits, boundary=boundary)
+        if bake is not None:
+            # Round-4 stage driver: a batched root forward replaces this one, and
+            # the accepted serial call is not made at all.
+            predicted_global = bake.plan(
+                mx.array(normalized_global), mx.array(normalized_local),
+                mx.array(normalized_poses), mx.array(global_mask), mx.array(local_mask),
+                mx.array(pose_mask), tokens, mx.array(dense_target),
+                mx.array(dense_target_mask), duration_logits=mx_duration_logits)
+        else:
+            _, predicted_global = self.root.plan(
+                mx.array(normalized_global), mx.array(normalized_local), mx.array(normalized_poses),
+                mx.array(global_mask), mx.array(local_mask), mx.array(pose_mask),
+                tokens, mx.array(dense_target), mx.array(dense_target_mask),
+                duration_logits=mx_duration_logits, boundary=boundary)
         # Round-3 switch ``pred_local_defer``: keep the predicted-local-root block
         # on the device, so the root planner's output is not read back to the host
         # and the synchronisation that used to happen here disappears into the
@@ -368,10 +391,16 @@ class MlxPipeline:
 
         # --- pose planner + sampling (src/planner.cpp:167-184) -----------
         pose_tokens = np.full((tokens, 8), 10, dtype=np.int32)
-        logits = (self.pose.plan(pose_tokens, pose_root_argument, mx.array(pose_condition),
-                                 mx.array(has_pose_condition.astype(np.float32)[:, None]),
-                                 tokens, tokens) if pose_logits is None
-                  else pose_logits)
+        pose_condition_device = mx.array(pose_condition)
+        has_pose_device = mx.array(has_pose_condition.astype(np.float32)[:, None])
+        if bake is not None:
+            logits = bake.pose(pose_tokens, pose_root_argument, pose_condition_device,
+                               has_pose_device, tokens, tokens)
+        else:
+            logits = (self.pose.plan(pose_tokens, pose_root_argument, pose_condition_device,
+                                     has_pose_device, tokens, tokens)
+                      if pose_logits is None
+                      else pose_logits)
         logits_np = np.asarray(PosePlanner.reshape_logits(logits), dtype=np.float32)
         uniform = None
         if not sampling_argmax:
@@ -425,9 +454,14 @@ class MlxPipeline:
         # on the host, hand it straight to ``decode_motion`` instead of reading it
         # back and re-uploading it.  Same values either way -- this removes a
         # host synchronisation, not a computation.
-        decoded_device = self.decoder.decode(
-            mx.array(quantized), external_argument, mx.array(pose_condition),
-            mx.array(has_pose_condition.astype(np.float32)[:, None]), tokens)
+        if bake is not None:
+            decoded_device = bake.decoder(
+                mx.array(quantized), external_argument, pose_condition_device,
+                has_pose_device, tokens)
+        else:
+            decoded_device = self.decoder.decode(
+                mx.array(quantized), external_argument, pose_condition_device,
+                has_pose_device, tokens)
         if capture_trace or not nn._opt("decoder_defer"):
             decoded = np.asarray(decoded_device, dtype=np.float32).reshape(frames, 413)
             decoded_argument = mx.array(decoded)

@@ -235,7 +235,8 @@ def paired_measure(device: str, steps: int, styles_dir: Path, bundle_path: Path,
 
 
 def bake_measure(device: str, styles_dir: Path, bundle_path: Path, batch_sizes,
-                 seed: int, repeats: int, homogeneous: bool = False) -> dict:
+                 seed: int, repeats: int, homogeneous: bool = False,
+                 metrics: bool = False) -> dict:
     """Round-3 batch bake: ``B`` independent scenarios, serial vs batched pose.
 
     The reference arm plans every scenario **alone** through the ordinary
@@ -249,6 +250,11 @@ def bake_measure(device: str, styles_dir: Path, bundle_path: Path, batch_sizes,
     a duration and therefore a single batched forward: that is the *best case*
     for this design, and the difference against the default (styles cycling) is
     the cost of token-count fragmentation.
+
+    ``metrics`` additionally reports the round-4 perturbation/margin numbers for
+    this round-3 stage set, so the two rounds' safety factors are computed by the
+    same code on the same scenarios.  It costs an extra snapshot pass and does
+    not touch either timed arm.
     """
     from motionbricks_mlx.models import bake as bake_module
 
@@ -310,6 +316,14 @@ def bake_measure(device: str, styles_dir: Path, bundle_path: Path, batch_sizes,
             "batched_times_ms": batched_times,
             "comparison": comparison,
         }
+        if metrics:
+            snapshots, _ = bake_module.record_serial(pipeline, bundle, scenarios,
+                                                     capture_stages=True)
+            perturbations = bake_module.stage_perturbations(snapshots, batched_runs)
+            margins = bake_module.decision_margins(snapshots)
+            entry["perturbations"] = perturbations
+            entry["margins"] = margins
+            entry["safety"] = bake_module.safety_factor(perturbations, margins)
         report["batches"][str(size)] = entry
         print(f"B={size:<3d} serial p50 {entry['serial_ms_p50']:8.2f} ms   "
               f"batched p50 {entry['batched_ms_p50']:8.2f} ms   "
@@ -323,6 +337,10 @@ def bake_measure(device: str, styles_dir: Path, bundle_path: Path, batch_sizes,
               f"rotations {comparison['worst_rotations']:.3e}, "
               f"angle {comparison['worst_angle_deg']:.4f} deg; "
               f"groups {entry['token_groups']}")
+        if "safety" in entry:
+            safety = entry["safety"]
+            print(f"       safety pose {safety['pose_perturbation']:.3e}/"
+                  f"{safety['pose_margin']:.3e} = {safety['pose_ratio']:.4f}x")
     bundle.release()
     return report
 
@@ -351,6 +369,15 @@ def main() -> int:
     parser.add_argument("--bake-homogeneous", action="store_true",
                         help="with --bake, use one style for every scenario so "
                              "the batch is duration-homogeneous (best case)")
+    parser.add_argument("--bake-metrics", action="store_true",
+                        help="with --bake-stages pose, also report the round-4 "
+                             "perturbation/margin safety numbers")
+    parser.add_argument("--bake-stages", choices=("pose", "root", "all"),
+                        default="pose",
+                        help="which stages the bake batches: 'pose' is the "
+                             "round-3 bake, 'root' adds the root stage, 'all' "
+                             "adds the root and decoder stages (the two new "
+                             "switches are default-off; this turns them on)")
     args = parser.parse_args()
 
     if not (args.bundle / "manifest.json").is_file():
@@ -359,14 +386,21 @@ def main() -> int:
 
     if args.bake:
         sizes = [int(item) for item in args.bake.split(",") if item.strip()]
+        enable_bake_stages(args.bake_stages)
         reports = []
         for device in args.devices.split(","):
             device = device.strip()
             if not device:
                 continue
-            report = bake_measure(device, args.styles, args.bundle, sizes,
-                                  args.seed, args.bake_repeats,
-                                  homogeneous=args.bake_homogeneous)
+            if args.bake_stages == "pose":
+                report = bake_measure(device, args.styles, args.bundle, sizes,
+                                      args.seed, args.bake_repeats,
+                                      homogeneous=args.bake_homogeneous,
+                                      metrics=args.bake_metrics)
+            else:
+                report = bake_full_measure(device, args.styles, args.bundle, sizes,
+                                           args.seed, args.bake_repeats,
+                                           homogeneous=args.bake_homogeneous)
             reports.append(report)
         if args.json:
             args.json.write_text(json.dumps(reports, indent=2) + "\n", encoding="utf-8")
@@ -426,6 +460,141 @@ def main() -> int:
         print(f"wrote {args.json}")
     return 0
 
+
+# ---------------------------------------------------------------------------
+# Round 4: the full-stage bake (root + decoder on top of round 3's pose batch)
+# ---------------------------------------------------------------------------
+
+BAKE_STAGE_SWITCHES = {
+    "pose": "",
+    "root": "bake_root_batch=1",
+    "all": "bake_root_batch=1,bake_decoder_batch=1",
+}
+
+
+def enable_bake_stages(level: str) -> None:
+    """Turn on the round-4 bake switches for this process (default: off)."""
+    extra = BAKE_STAGE_SWITCHES[level]
+    current = os.environ.get("MOTIONBRICKS_MLX_OPT")
+    if not extra:
+        if current is not None:
+            os.environ["MOTIONBRICKS_MLX_OPT"] = current
+        return
+    os.environ["MOTIONBRICKS_MLX_OPT"] = f"{current},{extra}" if current else extra
+
+
+def bake_full_measure(device: str, styles_dir: Path, bundle_path: Path, batch_sizes,
+                      seed: int, repeats: int, homogeneous: bool = False) -> dict:
+    """Round-4 bake: every batched stage, timed end to end as one region.
+
+    "Serial" is ``B`` scenarios planned one after another through the accepted
+    pipeline; "batched" is the stage-synchronised driver of
+    :mod:`motionbricks_mlx.models.bake`, which substitutes all three batched
+    forwards and reports ``B`` final motions.  Both arms warm up before timing and
+    alternate which goes first, so drift is shared.
+    """
+    import statistics as _statistics
+
+    from motionbricks_mlx.models import bake as bake_module
+
+    stages = bake_module.batched_stages()
+    bundle = Bundle(bundle_path, device=device)
+    pipeline = MlxPipeline(bundle)
+    style_names = [STYLES[0]] if homogeneous else list(STYLES)
+    report: dict = {"device": device, "repeats": repeats, "homogeneous": homogeneous,
+                    "stages": sorted(stages), "batches": {}}
+    for size in batch_sizes:
+        scenarios = [
+            bake_module.Scenario(
+                label=f"B{size}-s{index}-{style_names[index % len(style_names)]}",
+                style=load_style(styles_dir / f"{style_names[index % len(style_names)]}.mbstyle"),
+                seed=seed + index,
+                movement=(0.2, 0.0, 0.0))
+            for index in range(size)]
+        # Reference arm with stage snapshots and the reference single-scenario
+        # p50.  Untimed: the snapshot reads force a host drain per stage.
+        reference, single = bake_module.record_serial(pipeline, bundle, scenarios,
+                                                      capture_stages=True)
+        # One untimed warm-up of each arm, so neither pays compile cost in a
+        # timed region: the batched forwards compile one variant per shape.
+        bake_module.drive_batch(pipeline, bundle, scenarios, stages, capture_trace=False)
+        bake_module.record_serial(pipeline, bundle, scenarios, capture_trace=False)
+
+        serial_times: list[float] = []
+        batched_times: list[float] = []
+        for repeat in range(repeats):
+            order = (True, False) if repeat % 2 == 0 else (False, True)
+            for arm_is_serial in order:
+                if arm_is_serial:
+                    started = time.perf_counter()
+                    bake_module.record_serial(pipeline, bundle, scenarios,
+                                              capture_trace=False)
+                    serial_times.append((time.perf_counter() - started) * 1000.0)
+                else:
+                    started = time.perf_counter()
+                    bake_module.drive_batch(pipeline, bundle, scenarios, stages,
+                                            capture_trace=False)
+                    batched_times.append((time.perf_counter() - started) * 1000.0)
+
+        campaign = bake_module.drive_batch(pipeline, bundle, scenarios, stages,
+                                           capture_trace=True)
+        comparison = bake_module.compare([record.run for record in reference],
+                                        campaign.runs)
+        perturbations = bake_module.stage_perturbations(reference, campaign.runs)
+        margins = bake_module.decision_margins(reference)
+        groups = {str(record.tokens): 0 for record in reference}
+        for record in reference:
+            groups[str(record.tokens)] += 1
+        entry = {
+            "batch_size": size,
+            "serial_ms_p50": _statistics.median(serial_times),
+            "serial_ms_min": min(serial_times),
+            "batched_ms_p50": _statistics.median(batched_times),
+            "batched_ms_min": min(batched_times),
+            "single_scenario_ms_p50": _statistics.median(single),
+            "single_scenario_ms_batched": _statistics.median(batched_times) / size,
+            "throughput_serial_per_s": size / (_statistics.median(serial_times) / 1000.0),
+            "throughput_batched_per_s": size / (_statistics.median(batched_times) / 1000.0),
+            "speedup": _statistics.median(serial_times) / _statistics.median(batched_times),
+            "token_groups": groups,
+            "suspensions": campaign.suspensions,
+            "serial_times_ms": serial_times,
+            "batched_times_ms": batched_times,
+            "comparison": comparison,
+            "perturbations": perturbations,
+            "margins": margins,
+            "safety": bake_module.safety_factor(perturbations, margins),
+        }
+        if homogeneous and size > 1:
+            entry["stage_throughput"] = bake_module.stage_throughput(
+                pipeline, campaign.drivers, repeats=max(repeats, 5))
+        report["batches"][str(size)] = entry
+        safety = entry["safety"]
+        print(f"B={size:<3d} serial p50 {entry['serial_ms_p50']:8.2f} ms   "
+              f"batched p50 {entry['batched_ms_p50']:8.2f} ms   "
+              f"speedup {entry['speedup']:.3f}x   "
+              f"per-scenario {entry['single_scenario_ms_batched']:6.2f} ms   "
+              f"throughput {entry['throughput_batched_per_s']:6.2f}/s")
+        print(f"       tokens {comparison['token_identical']}/{comparison['scenarios']} "
+              f"identical, uniforms {comparison['uniform_identical']}/{comparison['scenarios']}, "
+              f"duration {comparison['selected_identical']}/{comparison['scenarios']}, "
+              f"{comparison['differing_tokens']}/{comparison['total_tokens']} tokens differ; "
+              f"worst roots {comparison['worst_roots_m']:.3e} m, "
+              f"rotations {comparison['worst_rotations']:.3e}, "
+              f"angle {comparison['worst_angle_deg']:.4f} deg")
+        print(f"       safety pose {safety['pose_perturbation']:.3e}/"
+              f"{safety['pose_margin']:.3e} = {safety['pose_ratio']:.4f}x   "
+              f"duration {safety['duration_perturbation']:.3e}/"
+              f"{safety['duration_margin']:.3e} = "
+              f"{safety['duration_ratio'] if safety['duration_ratio'] is None else format(safety['duration_ratio'], '.4f')}x   "
+              f"stages {sorted(stages)}")
+        for stage, row in sorted(entry.get("stage_throughput", {}).items()):
+            print(f"       stage {stage:<8s} serial {row['serial_p50_ms']:7.3f} ms/plan   "
+                  f"batched {row['batched_p50_ms']:8.3f} ms   "
+                  f"per-scenario {row['per_scenario_ms']:6.3f} ms   "
+                  f"speedup {row['speedup']:5.2f}x")
+    bundle.release()
+    return report
 
 if __name__ == "__main__":
     raise SystemExit(main())
