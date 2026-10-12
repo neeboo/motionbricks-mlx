@@ -518,9 +518,11 @@ diff -q /tmp/r7/final-cpu.json out/plan-mlx.json
 
 ## 10. `git log --oneline -3` / `git status --short`
 
+本轮主体提交是 `b527271`；补上这份文档里那段 `git status` 正文的是它的后续提交。
+
 ```
 $ git log --oneline -3
-f85da97 round 7: bake a real library, export the animations, and ship the twelve-field manifest
+b527271 round 7: bake a real library, export the animations, and ship the twelve-field manifest
 0f020f6 decision 0009 approved: batching the motion decode joins the release bake config
 a49a7d1 round 6: attribute the single pass with a direct instrument, then batch the motion decode
 
@@ -550,7 +552,7 @@ $ git status --short
 ?? viewer/
 ```
 
-（上面是**提交后**的状态：本轮新增/修改的文件已经在 `f85da97` 里，所以不再出现在 status 中；剩下的是刻意不入库的产物与另一个 agent 的在制品。）
+（上面是**提交后**的状态：本轮新增/修改的文件已经在 `b527271` 里，所以不再出现在 status 中；剩下的是刻意不入库的产物与另一个 agent 的在制品。）
 
 上面 `git status --short` 里：`plans/`、`runs-*.json`、`render/render-*.json` 是**本轮的产物，故意不进 git**（可逐字节再生，理由见 `artifacts/bake-2026-10-12/README.md`）；`artifacts/viewer-*/`、`scripts/mlx_viewer.py`、`tests/test_viewer_*.py`、`viewer/` 是**同工作区另一个 agent 的 viewer 工作**，与本轮无关，我没有碰。
 
