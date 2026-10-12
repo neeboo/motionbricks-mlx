@@ -49,12 +49,20 @@ const statWalked = document.querySelector('#stat-walked');
 const statPlayback = document.querySelector('#stat-playback');
 const statBackend = document.querySelector('#stat-backend');
 const statFirstFrame = document.querySelector('#stat-firstframe');
+const targetPanel = document.querySelector('#mlx-target-panel');
+const targetPlace = document.querySelector('#mlx-target-place');
+const targetReplan = document.querySelector('#mlx-target-replan');
+const targetClear = document.querySelector('#mlx-target-clear');
+const targetHere = document.querySelector('#mlx-target-here');
+const targetList = document.querySelector('#mlx-target-list');
+const targetHitLine = document.querySelector('#mlx-target-hit');
 const hud = {
   style: document.querySelector('#hud-style'),
   plan: document.querySelector('#hud-plan'),
   hz: document.querySelector('#hud-hz'),
   walked: document.querySelector('#hud-walked'),
   rootz: document.querySelector('#hud-rootz'),
+  target: document.querySelector('#hud-target'),
   clips: document.querySelector('#hud-clips'),
 };
 const html = document.documentElement;
@@ -132,6 +140,13 @@ const state = {
   readyMs: null,
   pageStart: performance.now(),
   settleAt: null,
+  // --- placed target keyframes (this round) --------------------------------
+  // `placed` is the list the user owns, in *world* coordinates: the same frame
+  // the server plans in, because the page draws `world_positions_xyz` verbatim.
+  placed: [],
+  placing: false,        // "Place target" armed: the next floor click drops a point
+  lastHit: null,
+  targetMarkers: null,
 };
 
 const trailGeometry = () => new THREE.BufferGeometry();
@@ -172,6 +187,15 @@ function resize() {
 }
 
 renderer.domElement.addEventListener('pointerdown', event => {
+  if (state.placing) {
+    // Placement owns the click while armed, so a floor click never also starts
+    // an orbit. No synthetic input is involved: this is the page's own pointer.
+    const point = groundPointAt(event.clientX, event.clientY);
+    if (point) addTarget(point.x, point.z, headingDegTo(point.x, point.z));
+    setPlacing(false);
+    event.preventDefault();
+    return;
+  }
   cameraView.dragging = true;
   cameraView.x = event.clientX;
   cameraView.y = event.clientY;
@@ -196,6 +220,126 @@ renderer.domElement.addEventListener('wheel', event => {
   event.preventDefault();
 }, {passive: false});
 renderer.domElement.addEventListener('dblclick', resetCameraView);
+
+// ---------------------------------------------------------------------------
+// placed target keyframes -- ground markers and the floor raycast
+//
+// The marker is drawn in the *same* world frame as the animated skeleton, and
+// the server resolves the same (x, z, heading) into boundary frames 4..7, so a
+// marker and the orange ghost that comes back from the plan sit at the same
+// place by construction.  That is what makes "ghost vs. result" a real
+// comparison rather than two drawings of the same guess.
+// ---------------------------------------------------------------------------
+const targetGroup = new THREE.Group();
+scene.add(targetGroup);
+const TARGET_COLOR = 0xff763b;
+
+const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const pointerNdc = new THREE.Vector2();
+const raycaster = new THREE.Raycaster();
+const hitPoint = new THREE.Vector3();
+
+function groundPointAt(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNdc.set(((clientX - rect.left) / rect.width) * 2 - 1,
+                 -((clientY - rect.top) / rect.height) * 2 + 1);
+  raycaster.setFromCamera(pointerNdc, camera);
+  return raycaster.ray.intersectPlane(floorPlane, hitPoint) ? hitPoint.clone() : null;
+}
+
+function headingDegTo(x, z) {
+  // Facing from the character toward the point; the server's heading
+  // convention is atan2(x, z) in degrees (src/agent.cpp:236-241).
+  if (!state.rig) return 0;
+  const root = state.rig.jointMeshes[0].position;
+  return (Math.atan2(x - root.x, z - root.z) * 180) / Math.PI;
+}
+
+function rebuildTargetMarkers() {
+  while (targetGroup.children.length) {
+    const child = targetGroup.children.pop();
+    child.geometry?.dispose();
+    child.material?.dispose();
+  }
+  for (const point of state.placed) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.16, 0.22, 28),
+      new THREE.MeshBasicMaterial({color: TARGET_COLOR, transparent: true, opacity: 0.95,
+                                   side: THREE.DoubleSide, depthWrite: false}));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(point.x, 0.02, point.z);
+    ring.renderOrder = 5;
+    targetGroup.add(ring);
+    // A short arrow on the ground for the placed facing.
+    const yaw = (point.heading_deg * Math.PI) / 180;
+    const arrow = new THREE.Mesh(
+      new THREE.ConeGeometry(0.075, 0.24, 12),
+      new THREE.MeshBasicMaterial({color: 0xffd0a8, depthWrite: false}));
+    arrow.rotation.z = -Math.PI / 2;
+    arrow.rotation.y = yaw;
+    arrow.position.set(point.x + Math.sin(yaw) * 0.33, 0.03, point.z + Math.cos(yaw) * 0.33);
+    arrow.renderOrder = 5;
+    targetGroup.add(arrow);
+  }
+  html.dataset.mlxPlacedTargets = String(state.placed.length);
+}
+
+function renderTargetList() {
+  targetList.innerHTML = '';
+  state.placed.forEach((point, index) => {
+    const row = document.createElement('li');
+    const label = document.createElement('span');
+    label.className = 'target-index';
+    label.textContent = `T${index + 1}`;
+    row.append(label);
+    for (const [key, step, digits] of [['x', 0.25, 2], ['z', 0.25, 2], ['heading_deg', 15, 0]]) {
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.step = String(step);
+      input.value = point[key].toFixed(digits);
+      input.dataset.field = key;
+      input.title = key === 'heading_deg' ? 'facing (degrees)' : `${key} (metres)`;
+      input.addEventListener('change', () => {
+        const value = Number(input.value);
+        if (Number.isFinite(value)) {
+          point[key] = value;
+          rebuildTargetMarkers();
+        }
+      });
+      row.append(input);
+    }
+    const drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'target-drop';
+    drop.textContent = '×';
+    drop.title = 'remove this target';
+    drop.addEventListener('click', () => {
+      state.placed.splice(index, 1);
+      renderTargetList();
+      rebuildTargetMarkers();
+    });
+    row.append(drop);
+    targetList.append(row);
+  });
+  targetReplan.disabled = state.placed.length === 0;
+}
+
+function addTarget(x, z, headingDeg) {
+  if (state.placed.length >= 4) {
+    setStatus('at most 4 placed targets: clear one first', true);
+    return;
+  }
+  state.placed.push({x, z, heading_deg: headingDeg});
+  renderTargetList();
+  rebuildTargetMarkers();
+}
+
+function setPlacing(armed) {
+  state.placing = armed;
+  targetPlace.setAttribute('aria-pressed', String(armed));
+  targetPlace.textContent = armed ? 'Click the floor…' : 'Place target';
+  html.dataset.mlxPlacing = String(armed);
+}
 
 // ---------------------------------------------------------------------------
 // HTTP client
@@ -315,8 +459,9 @@ function nextSeed() {
   seedInput.value = String((Number(seedInput.value) || 0) + 1);
 }
 
-async function requestPlan(advance) {
+async function requestPlan(advance, options = {}) {
   if (state.pending) { state.queued = true; return null; }
+  const toTargets = options.toTargets === true && state.placed.length > 0;
   state.pending = true;
   const started = performance.now();
   try {
@@ -327,8 +472,14 @@ async function requestPlan(advance) {
       facing: state.facing,
       reset: state.resetPending,
       advance: state.resetPending ? 0 : advance,
+      // Additive: without targets the server response is byte-for-byte the
+      // same document it returned before this round.
+      targets: toTargets ? state.placed.map(p => [p.x, p.z, p.heading_deg]) : undefined,
+      target_space: 'world',
+      pose_mode: 'style',
     });
     state.resetPending = false;
+    state.lastHit = toTargets ? (payload.target_hit || null) : null;
     applyMotion(payload, advance);
     return payload;
   } catch (error) {
@@ -367,6 +518,25 @@ function applyMotion(payload, advance) {
   statClips.textContent = String(state.clips);
   hud.clips.textContent = String(state.clips);
   hud.style.textContent = payload.style.replaceAll('_', ' ');
+  // Placed-target readout: the same numbers the server measured, so the HUD in
+  // a screenshot carries the acceptance evidence, not just the animation.
+  if (payload.target_hit) {
+    const errors = payload.target_hit.errors;
+    const ok = payload.target_hit.within_tolerance;
+    hud.target.textContent = `${errors.root_planar_m.toFixed(3)} m${ok ? '' : ' !'}`;
+    targetHitLine.dataset.state = ok ? 'ok' : 'miss';
+    targetHitLine.textContent =
+      `${payload.placed_targets.count} placed · hit frames ${payload.target_hit.window_frames[0]}–`
+      + `${payload.target_hit.window_frames[1]} · root ${errors.root_planar_m.toFixed(4)} m`
+      + ` (tol ${payload.target_hit.tolerances.root_planar_m})`
+      + ` · heading ${errors.heading_deg.toFixed(2)}°`
+      + ` · joints ${errors.joint_m.toFixed(4)} m · ${ok ? 'within tolerance' : 'OUT OF TOLERANCE'}`;
+    html.dataset.mlxTargetHit = errors.root_planar_m.toFixed(6);
+    html.dataset.mlxTargetHitOk = String(ok);
+    html.dataset.mlxTargetWindow = payload.target_hit.window_frames.join('-');
+  } else {
+    hud.target.textContent = state.placed.length ? `${state.placed.length} placed` : '—';
+  }
   statPlan.textContent = `${payload.timing.plan_ms.toFixed(1)} ms`;
   hud.plan.textContent = `${payload.timing.plan_ms.toFixed(1)} ms`;
   statClip.textContent = `${payload.frames} frames · ${payload.style.replaceAll('_', ' ')}`;
@@ -499,6 +669,41 @@ styleSelect.addEventListener('change', () => {
 
 seedNext.addEventListener('click', () => { nextSeed(); schedulePlan(0); seedNext.blur(); });
 seedInput.addEventListener('change', () => schedulePlan(0));
+
+// --- placed targets --------------------------------------------------------
+function replanToTargets() {
+  if (!state.placed.length) return;
+  // Plan from the frame already on screen (`advance`) so the motion starts where
+  // the character actually is -- the same continuity seam the rest of the page
+  // uses. A fresh session has nothing to advance from, hence the reset flag.
+  const advance = state.resetPending ? 0 : Math.floor(state.playhead);
+  void requestPlan(advance, {toTargets: true});
+  targetReplan.blur();
+}
+
+targetPlace.addEventListener('click', () => setPlacing(!state.placing));
+targetReplan.addEventListener('click', replanToTargets);
+targetClear.addEventListener('click', () => {
+  state.placed = [];
+  state.lastHit = null;
+  renderTargetList();
+  rebuildTargetMarkers();
+  targetHitLine.textContent = 'no target placed yet';
+  targetHitLine.removeAttribute('data-state');
+  hud.target.textContent = '—';
+  html.dataset.mlxTargetHit = '';
+  targetClear.blur();
+});
+targetHere.addEventListener('click', () => {
+  const facing = state.facing;
+  const length = Math.hypot(facing[0], facing[1]) || 1;
+  const root = state.rig ? state.rig.jointMeshes[0].position : {x: 0, z: 0};
+  const x = root.x + (facing[0] / length);
+  const z = root.z + (facing[1] / length);
+  addTarget(x, z, (Math.atan2(facing[0] / length, facing[1] / length) * 180) / Math.PI);
+  targetHere.blur();
+});
+
 targetsToggle.addEventListener('change', () => {
   for (let index = 0; index < state.targetRigs.length; index++) {
     state.targetRigs[index].setVisible(targetsToggle.checked && index < (state.targets?.frames || 0));
@@ -559,6 +764,11 @@ function animate(now) {
 // `?style=<name>&seed=<n>&move=x,z` preselects the session from the URL. This
 // is the only "external" way to drive the page without touching its controls,
 // and it is a plain address-bar parameter, not synthesized input.
+//
+// `?targets=x,z,deg;x,z,deg&to_targets=1` additionally pre-places the target
+// keyframes and asks for the target plan on boot, so a headless `goto` +
+// `wait_for_timeout` session shows the orange ghosts and the generated clip in
+// one screenshot without a single synthetic click.
 const addressBar = new URLSearchParams(location.search);
 
 async function boot() {
@@ -583,15 +793,43 @@ async function boot() {
       const [x, z] = addressBar.get('move').split(',').map(Number);
       if (Number.isFinite(x) && Number.isFinite(z)) {
         state.move = [x, z]; state.facing = [x, z]; state.presetMove = true;
+        // `presetMove` only survives `updateControl()` when no pad key is held;
+        // the default state holds W, which would silently overwrite the
+        // address-bar direction with the camera-relative W vector. Dropping the
+        // pad key is what makes `?move=` mean what the docs say it means.
+        state.padKey = null;
       }
     }
     state.skeleton = inventory.skeleton;
     buildRigs(inventory.skeleton);
     updateControl();
+    // Pre-placed targets from the address bar (same mechanism as ?style/?seed).
+    const presetTargets = addressBar.get('targets');
+    if (presetTargets) {
+      for (const piece of presetTargets.split(';')) {
+        const parts = piece.split(',').map(Number);
+        if (parts.length >= 2 && parts.slice(0, 3).every(Number.isFinite)) {
+          state.placed.push({x: parts[0], z: parts[1], heading_deg: parts[2] || 0});
+        }
+      }
+    }
+    renderTargetList();
+    rebuildTargetMarkers();
+    // `?live=0` unchecks "Replan while walking", so the page shows exactly the
+    // one clip that was planned for the placed targets (and the HUD keeps that
+    // plan's hit numbers). Plain address-bar parameter, no synthetic input.
+    if (addressBar.get('live') === '0') {
+      liveToggle.checked = false;
+      html.dataset.mlxLive = 'false';
+    }
     state.readyMs = performance.now() - state.pageStart;
     html.dataset.mlxReady = 'true';
     html.dataset.mlxReadyMs = state.readyMs.toFixed(1);
-    await requestPlan(0);
+    if (state.placed.length && addressBar.get('to_targets') === '1') {
+      await requestPlan(0, {toTargets: true});
+    } else {
+      await requestPlan(0);
+    }
   } catch (error) {
     setStatus(`startup failed: ${error.message}`, true);
     console.error(error);
@@ -601,6 +839,9 @@ async function boot() {
 window.addEventListener('resize', resize);
 resize();
 updateControl();
+renderTargetList();
+rebuildTargetMarkers();
 html.dataset.mlxLive = String(liveToggle.checked);
+html.dataset.mlxPlacing = 'false';
 requestAnimationFrame(animate);
 void boot();

@@ -16,6 +16,7 @@
         <span class="hud-key">step rate</span><span class="hud-value" id="hud-hz">—</span>
         <span class="hud-key">walked</span><span class="hud-value" id="hud-walked">0.00 m</span>
         <span class="hud-key">root z</span><span class="hud-value" id="hud-rootz">—</span>
+        <span class="hud-key">target</span><span class="hud-value" id="hud-target">—</span>
         <span class="hud-key">clips</span><span class="hud-value" id="hud-clips">0</span>
       </div>
     </section>
@@ -64,6 +65,23 @@
       <label class="mlx-checkline"><input id="mlx-live" type="checkbox" checked> Replan while walking</label>
       <label class="mlx-checkline"><input id="mlx-trail" type="checkbox" checked> Ground trail</label>
       <label class="mlx-checkline"><input id="mlx-targets" type="checkbox" checked> Placed target keyframes</label>
+
+      <div id="mlx-target-panel" aria-label="Placed target keyframes">
+        <p class="mlx-target-title">Your target keyframes</p>
+        <p class="mlx-target-help" id="mlx-target-help">Click <b>Place target</b>, then click the
+          floor to drop a point (1–4). The orange ghosts are exactly the window the model is
+          asked to reach; <b>Replan to targets</b> plans from where the character stands now.</p>
+        <div class="mlx-row">
+          <button id="mlx-target-place" type="button" aria-pressed="false">Place target</button>
+          <button id="mlx-target-replan" type="button">Replan to targets</button>
+        </div>
+        <div class="mlx-row">
+          <button id="mlx-target-clear" type="button">Clear targets</button>
+          <button id="mlx-target-here" type="button">+1 m ahead</button>
+        </div>
+        <ol id="mlx-target-list"></ol>
+        <p id="mlx-target-hit" role="status" aria-live="polite">no target placed yet</p>
+      </div>
 
       <p id="mlx-status" role="status" aria-live="polite">Loading model…</p>
 

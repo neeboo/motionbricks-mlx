@@ -374,3 +374,220 @@ kill "$(cat artifacts/viewer-run/server.pid)"
 
 > 页面静态资源是每次请求现读磁盘的，改 `viewer/*.js` 不用重启服务器；
 > 改 `scripts/mlx_viewer.py` 要重启。
+
+---
+
+# 追加（第 9 轮）：用户自己摆目标关键帧
+
+**一句话**：模型本来就是**关键帧条件生成器**；本轮把它的**目标窗口**从"由命令推出来"
+改成"由你摆出来"，页面上能点、能填、能立刻重规划，并且把**命中度实测**印在 HUD 与侧栏里。
+
+起法不变（本轮实际跑在 `8859`，`8848` 上仍是第 8 轮那个进程）：
+
+```bash
+./.venv/bin/python scripts/mlx_viewer.py --port 8859 --device gpu
+```
+
+## 1. 目标窗口到底是什么（发现，带行号）
+
+参考实现的 transition boundary 是**固定 8 帧窗口**（`src/root.cpp:366` "4 start + 4 end"，
+`BOUNDARY_FRAMES = 8`，移植见 `models/schema.py:24-26`）：
+
+| 片段 | 帧 | 含义 | 来源 |
+|---|---|---|---|
+| start | 0..3 | 当前状态 | `encode_context`（`src/motion_rep.cpp:180-250`） |
+| **target** | **4..7** | **目标窗口** | `build_constraints` 用 style 片段 + spring 造出来（`src/agent.cpp:289-330`） |
+
+root planner 把**恰好这 4 帧**（按归一化后的 `global_root`）拷进 `dense_target` 张量，作为
+root 卷积堆的条件（`src/root.cpp:463-479`）；pose planner 同样把 `poses` 的 4..7 帧作为
+pose 条件（`src/pose.cpp`，移植在 `models/pose.py`）。**所以"目标"不是第 9 个输入，
+它就是 frames 4..7 本身。**
+
+每帧带的东西（可用的自由度）：
+
+| 块 | 宽度 | 字段 | 本轮是否暴露 |
+|---|---|---|---|
+| `global_root` | 5 | `x, y(pelvis 高度), z, cos(heading), sin(heading)` | **x/z/heading 暴露**；y 由 style（或 `pose_mode=hold` 时取当前骨盆高）给 |
+| `local_root` | 4 | `[heading_rate, dx·30, dz·30, y]` | 不单独暴露：它是 frames 4..7 的有限差分（`src/agent.cpp:322-334`），跟窗口一致 |
+| `poses`（external pose） | 303 | 33 个关节偏移 (99) + 34 个 6D 旋转 (204) | **`pose_mode` 两档**（style / hold）+ 高阶 API 可直接给整块 |
+| `target_root_translations` / `target_local_rotations_xyzw` | 4×3 / 4×34×4 | 导出元数据（页面画的橙色幽灵） | 由摆放结果重算 |
+
+**代价**：本轮只在 `build_constraints` **之后**替换 frames 4..7（
+`src/motionbricks_mlx/data/targets.py`），`build_constraints` 本身、`mlx_plan.py`、
+`mlx_align.py` 一行未动。不摆目标时走的还是原来的 `Agent.plan`，两个 sha256 逐字节不变
+（见第 4 节）。
+
+**对齐规则（实测，不是读出来的）**：这 4 帧和生成动作的**最后 4 帧**对齐。在**未改动的
+默认路径**上，对每个偏移算"生成 root − 窗口 root"，argmin 在 16/16 个 walk 系场景里
+（`walk` / `walk_zombie` / `slow_walk` / `walk_left` × seed 1/2/7/77）都是 `frames-4`；
+静态的 `idle` 无唯一 argmin（整条 root 轨迹位移 < 8 mm）。`tests/test_mlx_targets.py::
+test_alignment_rule_is_the_argmin_on_the_accepted_default_path` 会重新推导这条规则。
+
+**参考仓库自己那条路**（`has_world_target`，`src/agent.cpp:236-241`）移植里也在
+（`data/agent.py:349-351`），但它造的窗口是 spring 在 t=1.1 s 的值，**只走到请求距离的
+53.7%**（实测：请求 3 m → 窗口 1.611 m）；所以本轮的"摆帧"是**直接设窗口**，不是走那条路。
+
+## 2. 怎么用
+
+### HTTP（`curl`，验收就走这条）
+
+```bash
+# 目标 = 从当前朝向正前方 3 m（offset 空间），plan 后带 placed_targets / target_hit
+curl -s --get "http://127.0.0.1:8859/api/plan" \
+  --data-urlencode "style=walk" --data-urlencode "seed=1" \
+  --data-urlencode "move=0,1" --data-urlencode "facing=0,1" \
+  --data-urlencode "reset=1" \
+  --data-urlencode "targets=0,3,0" --data-urlencode "target_space=offset" \
+| ./.venv/bin/python -c 'import json,sys;d=json.load(sys.stdin);print(d["target_hit"]["errors"],d["target_hit"]["within_tolerance"])'
+```
+
+`POST /api/plan` 也收 JSON：`{"style":"walk","targets":[[0,3,0],[1,4,90]],"target_space":"world","pose_mode":"style"}`。
+新增参数：
+
+| 参数 | 默认 | 含义 |
+|---|---|---|
+| `targets` | 空 | 摆放的目标帧，最多 4 个；查询串 `"x,z,deg;x,z,deg"`，JSON `[[x,z,deg],...]`（`deg` 可省） |
+| `target_space` | `world` | `world`＝绝对世界坐标（点击地面得到的就是这个）；`offset`＝相对 clip 起点、沿角色自身朝向前/右的米数 |
+| `pose_mode` | `style` | 目标帧的关节构型：`style`＝沿用该 style 的目标窗口构型；`hold`＝保持本 clip 起步时的构型 |
+
+**不摆目标时**：回包 key 与第 8 轮**完全相同**（`placed_targets` / `target_hit` 不出现），
+发给 planner 的关键字也一个不多——`tests/test_viewer_targets.py` 把这条当契约测。
+
+摆 1 个目标时，窗口 4 个采样点都取该目标（"到位并保持"）；摆 n<4 个时，第 n 个之后的采样点
+**保持最后一个**；>4 个直接 400（不静默截断）。理由见第 3 节：保持型窗口是命中最好的形状。
+
+### 页面
+
+侧栏底部新增 **YOUR TARGET KEYFRAMES** 面板：
+
+* **Place target** 按一下进入摆放态，再**点地面**落一个点（1–4 个）；点下去时朝向取
+  "从角色指向该点"，地面上出现橙色圆环 + 朝向箭头；
+* 面板里逐行可直接改 `x` / `z` / `facing`（不用点界面也能用），`×` 删除；
+* **Replan to targets** 从**角色现在站的位置**（`advance = 当前播放帧`）plan 一段去命中这些点；
+* **Clear targets** 清空；
+* 橙色**幽灵骨架**就是返回的 `targets.world_positions_xyz`——也就是被写进 frames 4..7 的窗口，
+  和地面上的圆环**必然重合**（`tests/test_mlx_targets.py` 断言本模块算出的
+  `window.world_roots` 与 `restore_world` 之后的 `motion.target_roots` 逐位相同）；
+* HUD 多一格 **TARGET**：本次目标规划的 root 命中误差（米）；侧栏状态行给全套数字与容差。
+
+**URL 预置**（不用点界面，和 `?style=` 同一套机制）：
+`?style=walk&seed=1&move=0,1&live=0&targets=0,3,0&to_targets=1`。
+`live=0` 只做"取消勾选 Replan while walking"，让页面停在**那一次**目标规划上（HUD 的数字才不会
+被后续自动重规划冲掉）。顺手修了一个既有小 bug：`?move=` 以前会被 `updateControl()` 按
+"W 键按住"的相机相对方向覆盖掉，现在给 `?move=` 时不再持 W 键（`viewer/app.js`）。
+
+### CLI（脚本化 / 负控）
+
+```bash
+# 一次摆放，写与 mlx_plan.py 同形状的 plan 文档（多两个 key）+ 命中报告
+./.venv/bin/python scripts/mlx_plan_targets.py --style walk --seed 1 \
+    --from-current --target 0,3,0 --out /tmp/plan-targets.json
+
+# 负控：把目标一路放远，看位移是不是跟着单调走
+./.venv/bin/python scripts/mlx_plan_targets.py --style walk --from-current \
+    --sweep 0,0.5,1,2,3,5,10,50 --out /tmp/unused.json
+```
+
+`--out` 与 `mlx_plan.py` 一样是**必填**（第 2 轮的硬规则）。`--target` 默认是世界坐标，
+`--from-current` 时按"相对 clip 起点、沿自身朝向"解释。
+
+## 3. 命中度实测
+
+容差表（`data/targets.py::TARGET_TOLERANCES`，口径与 `mlx_align` 同形：**最大绝对误差**，
+位置用米、角度用度，取被比较块的最坏值）：
+
+| 指标 | 容差 | 依据 |
+|---|---|---|
+| `root_planar_m` | **0.15 m** | 默认路径（模型自己的窗口）同一指标的实测地板是 1.4e-3 m（静止）– 1.97e-2 m（44 帧 walk）；摆帧是**新请求**不是等价性检查，所以取地板的一个数量级以上，且约等于一个步幅的 20% |
+| `heading_deg` | **5.0°** | 同上；实测 0.13–3.0° 在容差内 |
+| `joint_m` | **0.15 m** | 最坏世界关节距离，与 root 同尺度 |
+
+**主实测（`walk`, seed 1, 正前方, `--sweep`，`artifacts/viewer-targets-run/cli-sweep.txt`）**：
+
+| 目标距离 | 实际位移 | 峰值 root 速度 | root 命中 | 朝向命中 | 判定 |
+|---|---|---|---|---|---|
+| 0.00 m | 0.000 m | 0.49 m/s | 0.0014 m | 0.23° | ok |
+| 0.50 m | 0.502 m | 0.84 m/s | 0.0113 m | 0.13° | ok |
+| 1.00 m | 0.990 m | 2.08 m/s | 0.0340 m | 0.99° | ok |
+| 2.00 m | 1.980 m | 2.86 m/s | 0.0543 m | 1.50° | ok |
+| 3.00 m | 2.948 m | 3.55 m/s | 0.1113 m | 0.55° | ok |
+| 5.00 m | 4.916 m | 5.24 m/s | 0.2519 m | 1.93° | **超容差** |
+| 10.00 m | 9.529 m | 10.63 m/s | 0.8186 m | 5.89° | **超容差** |
+| 50.00 m | 45.464 m | **49.10 m/s** | 5.8467 m | 14.18° | **超容差** |
+
+* **负控 1（放远）**：位移随目标距离**严格单调**（`monotone: True`），50 m 那档也真的"走过去"
+  了 45.5 m。这就是"模型确实在追目标"，不是"窗口被忽略"。
+* **负控 2（不可能的位置）**：50 m 在 1.47 s 的 clip 里意味着 ~31 m/s，模型**既不拒绝也不夹取**：
+  它把动作外推到峰值 **49.1 m/s**（约人类步行的 25 倍），如实给出 5.85 m 误差并判 `OUT OF TOLERANCE`。
+  没有 NaN/inf（`finite=True`，`token` 仍在 style 的允许集里）。**这是本轮要如实报告的失败方式。**
+* **可命中包络**（`artifacts/viewer-targets-run/envelope.txt`，3 个 style × 前后/侧向 × 5 个距离）：
+
+| style | 正前方通过到 | 侧向通过到 |
+|---|---|---|
+| `walk` | 4 m（0.0645 m） | 2 m（0.0593 m） |
+| `slow_walk` | 4 m（0.0828 m） | 3 m（0.0801 m） |
+| `walk_zombie` | 2 m（0.0707 m） | 2 m（0.0993 m） |
+
+  超出包络后误差**单调上升**（walk 侧向 6 m → 0.58 m；walk 正前 6 m → 0.18 m）。
+* **多帧窗口（2–4 个点）是另一个形状**：把窗口设成一条*运动*轨迹时模型会**滞后**
+  （4 帧 ramp 到 3 m → 0.745 m；2 点 1 m→3 m → 1.47 m），因为它更擅长收敛到一个**保持型**窗口。
+  所以：**摆 1 个点是精确档，摆 2–4 个点是"带滞后的轨迹档"**，两者都用同一张容差表判定，
+  超了就如实报 `OUT OF TOLERANCE`（侧栏那一行会变红）。
+* `pose_mode` 是**真的自由度**：`hold` 与 `style` 的窗口 root 的 x/z **逐位相同**，
+  但动作的旋转数组不同（`tests/test_mlx_targets.py` 断言）。
+
+## 4. 一致性（不摆目标时）
+
+```
+./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/step-gpu.json
+./.venv/bin/python scripts/mlx_plan.py --device cpu --out /tmp/step-cpu.json
+shasum -a 256 /tmp/step-gpu.json /tmp/step-cpu.json out/plan-mlx-gpu.json out/plan-mlx.json
+```
+
+| 检查 | 实测 |
+|---|---|
+| GPU plan sha256 | `ccda1952c967c8d7e893a795908f7de278f2acda1ce5ba1e1889692a8904a7c5` = `out/plan-mlx-gpu.json` |
+| CPU plan sha256 | `262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a` = `out/plan-mlx.json` |
+| 跨版 5 seed × 6 步（对 `c81d8ee`，`/tmp/r5/campaign.py` 原样复用） | `pose.tokens` **30/30**、`sampling_uniforms` **30/30**、时长 token **30/30**，**0/2416** 决策不同，动作偏差 **0.000e+00**（root 与 rotation 都是 0） |
+| `pytest -q` | **278 passed, 1 skipped**（第 8 轮起点 242/1，只增） |
+
+## 5. 画面
+
+`artifacts/viewer-targets-shots/`（无头 Chrome，REA `capture_browser_scenario`，
+**只有 `goto` + `wait_for_timeout`**，无合成输入、未点界面、未抢焦点、无音频；每张 PNG 用
+base64 解码后重算 sha256 并与证据比对）：
+
+| 文件 | sha256（前 16） | 说明 |
+|---|---|---|
+| `final-900-settle.png` | `b9eb44fd29842dfa` | **主图，且是在最终代码那一版服务器上拍的**：1440×900，橙色目标幽灵站在橙色圆环上（目标 `(0, 3)`），绿色角色走到半途，地面轨迹连起来；HUD `TARGET 0.111 m`、`CLIPS 1`、`Replan while walking` 未勾选。同一张的 DOM 属性：`data-mlx-status=ready`、`data-mlx-target-hit=0.111320`、`data-mlx-target-hit-ok=true`、`data-mlx-target-window=40-43`（落在 `artifacts/viewer-targets-run/final-page-attributes.txt`） |
+| `tall-1180-settle.png` | `c41027072633ec35` | 1440×1180：侧栏 **YOUR TARGET KEYFRAMES** 面板整块可见（Place target / Replan to targets / Clear targets / +1 m ahead / `T1 0.00 3.00 0 ×`），状态行写着 `1 placed · hit frames 40–43 · root 0.1113 m (tol 0.15) · heading 0.55° · joints 0.1259 m · within tolerance` |
+| `live-off-settle.png` | `fcce818b80394b74` | 1440×900 的上一版（服务器 python 还差最后一处**只影响"不摆目标"分支**的追加式改动）；命中数字与主图一致 |
+| `targets-settle.png` | `9bc54e11cf46a065` | 第一次会话（页面当时回 400 `unsupported target [0, 3, 0]`，见第 6 节坑 1） |
+
+四次会话的 `page-errors` 都是 **0**（最后两次的 `console` 也是 0 条）。
+
+## 6. 本轮踩到的坑（都修了）
+
+1. **JSON 数组没解析**：页面 POST `[[0,3,0]]`（点击产生的就是位置三元组），而
+   `parse_targets` 只认字符串和 dict → 服务端 400 `unsupported target [0, 3, 0]`，
+   截图里 `data-mlx-status="error"`、HUD 全是 `—`。修法是加 `(list, tuple, ndarray)` 分支，
+   并把"服务端默认 `target_space=world` / `pose_mode=style`"也测进契约。
+2. **`?move=` 名不副实**：文档说它预置一次会话，但初始状态持着 W 键，
+   `updateControl()` 会把地址栏给的方向按相机相对覆盖掉。修法：给 `?move=` 时清掉 `padKey`。
+   这直接决定了无头截图能不能"一次 `goto` 就落在预期朝向"。
+
+## 7. 诚实边界（本轮新增）
+
+1. **包络是有边界的**：正前方约 ≤4 m、侧向约 ≤2–3 m（按 style），超出就超容差；
+   但这只说明"超出容差"，**不是说模型拒绝**——它会一路外推到物理上荒谬的速度（49 m/s@50 m）。
+2. **多帧窗口滞后**：2–4 个点的*运动*窗口按实测有 ~0.7–1.5 m 的滞后；1 个点（保持型）才准。
+3. **关节姿态只给了两档 + 一个高阶入口**：页面不提供 34 个关节的编辑器；`pose_mode`
+   是 `style`/`hold`，API 层可以直接给整块 303 宽 external pose（`PlacedTarget.pose`），
+   但那条路**没有页面交互**，也只在纯数学层被测过。
+4. **y（骨盆高度）不是用户自由度**：它跟 style 走（`hold` 时跟当前姿态），摆帧只摆 x/z/朝向。
+5. **`bend` 之类上层交互、碰撞、脚部 IK 都没有**——摆到墙里/悬空，模型只会照做。
+6. **一次目标规划是一次性的**：`Replan to targets` 之后若开着 `Replan while walking`，
+   后续自动重规划回到**命令驱动**（不是继续追那批点）。再按一次按钮才会从**新位置**重新去追。
+7. **容差是自己定的**（`TARGET_TOLERANCES`），不是参考实现给的——参考实现里没有"命中度"
+   这个概念，所以我用 `mlx_align` 的**口径**（最大绝对误差 / 米 / 度 / 取最坏）加自己的阈值，
+   依据写在表里（地板的一个数量级以上 + 约 20% 步幅）。第 3 节那张包络表就是它的**可证伪面**。

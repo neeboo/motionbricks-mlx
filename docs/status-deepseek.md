@@ -604,3 +604,111 @@ Python 循环改成"保留关节序、批量化帧轴"，**逐位相同**（`np.
 `training/**`、`train_*.py`、`eval/**`、`scripts/eval_*.py`、`tests/test_eval_*.py`、
 `motion-representation.md`、`README.md`、`NOTICE`、`LICENSE`、`pyproject.toml` 未动；
 没有新依赖；参考仓库只读；**无 push**。
+
+---
+
+# Round 9（A 侧）：让用户自己摆目标关键帧
+
+**任务**：把"模型从当前姿态生成一段动作去命中**我指定的目标帧**"这条路打通，并在页面上能操作。
+判据：命中度（含负控）、不摆目标时逐字节不变、`pytest` 只增、验证一律走 HTTP。
+
+**① 数据通路的发现（带行号）**：transition boundary 是**固定 8 帧**（`src/root.cpp:366`
+"4 start + 4 end"；`BOUNDARY_FRAMES=8`，`models/schema.py:24-26`）——frames 0..3 是当前状态，
+**frames 4..7 就是目标**。root planner 把**恰好这 4 帧**归一化后拷进 `dense_target`
+（`src/root.cpp:463-479`），decoder 的 `target_cond_blocks` 吃的也是它
+（`decoder.cpp:189-215`，移植 `models/decoder.py:48-142`）；pose planner 同样用 4..7 帧的
+`poses`（`src/agent.cpp:289-330` → `models/pose.py`）。**结论：目标不是第 9 个输入，
+它就是 frames 4..7。** 每帧可用自由度：`global_root` 5 宽 `[x,y,z,cos h,sin h]`、
+`local_root` 4 宽（窗口的有限差分，不该单独设）、`poses` 303 宽外部姿态
+（33 关节偏移 + 34 个 6D 旋转）。导出元数据 `target_*` 就是页面画的橙色幽灵。
+
+**代价**：只在 `build_constraints` **之后**替换 4..7 帧（新文件
+`src/motionbricks_mlx/data/targets.py`）；`build_constraints`、`mlx_plan.py`、`mlx_align.py`
+一行未动，不摆目标时仍走原来的 `Agent.plan`。
+
+**对齐规则是量出来的**：这 4 帧对齐生成动作的**最后 4 帧**——在**未改动的默认路径**上，
+对每个偏移求"生成 root − 窗口 root"，argmin 在 16/16 个 walk 系场景里都是 `frames-4`
+（`idle` 因整条轨迹位移 <8 mm 而无可识别 argmin）。测试会重新推导这条规则，不让它悄悄腐化。
+
+**参考仓库那条 `has_world_target` 也在**（`src/agent.cpp:236-241` → `data/agent.py:349-351`），
+但它的窗口是 spring 在 t=1.1 s 的值，**只到请求距离的 53.7%**（实测 3 m → 1.611 m）；
+本轮的"摆帧"是**直接设窗口**，不走那条。
+
+**② 接口**：`scripts/mlx_plan_targets.py`（新，`--out` 必填；`--target x,z,deg` /
+`--from-current` / `--pose-mode` / `--sweep` 负控）；`/api/plan` 新增
+`targets`（≤4）/`target_space`（`world`|`offset`）/`pose_mode`（`style`|`hold`）；
+页面新增 **YOUR TARGET KEYFRAMES** 面板（点击地面摆 1–4 个点 + 逐行可填 + `Replan to targets`
++ `Clear targets`），HUD 多一格 **TARGET**（本次 root 命中米数）。摆 1 个点时窗口 4 个采样点
+都取它（保持型），n<4 时保持最后一个，>4 个直接 400。
+
+```bash
+curl -s --get "http://127.0.0.1:8859/api/plan" \
+  --data-urlencode "style=walk" --data-urlencode "seed=1" --data-urlencode "reset=1" \
+  --data-urlencode "move=0,1" --data-urlencode "facing=0,1" \
+  --data-urlencode "targets=0,3,0" --data-urlencode "target_space=offset"
+# -> placed_targets{...} + target_hit{errors:{root_planar_m:0.1113,...},within_tolerance:true}
+```
+
+**③ 命中度实测**（容差口径同 `mlx_align`：最大绝对误差 / 米 / 度 / 取最坏；
+`TARGET_TOLERANCES = {root_planar_m 0.15, heading_deg 5.0, joint_m 0.15}`，
+依据是默认路径同一指标的地板 1.4e-3–1.97e-2 m 的一个数量级以上 ≈ 20% 步幅）：
+
+| 目标 | 位移 | 峰值 root 速度 | root 命中 | 朝向 | 判定 |
+|---|---|---|---|---|---|
+| 0 / 0.5 / 1 / 2 / 3 m | 0.000 / 0.502 / 0.990 / 1.980 / 2.948 m | 0.49→3.55 m/s | 0.0014→0.1113 m | ≤1.5° | **ok** |
+| 5 / 10 / 50 m | 4.916 / 9.529 / **45.464** m | 5.24 / 10.63 / **49.10** m/s | 0.252 / 0.819 / **5.847** m | 1.9–14.2° | 超容差 |
+
+* **负控 1**：位移随目标距离**严格单调**（`monotone: True`），50 m 也真走出去 45.5 m —— 窗口
+  确实在被追，不是被忽略。
+* **负控 2（不可能的位置）**：模型**既不拒绝也不夹取**：50 m 在 1.47 s clip 里意味着 ~31 m/s，
+  它外推到峰值 **49.1 m/s**（人类步行 ~1–2 m/s 的 25 倍），如实给 5.85 m 误差并判
+  `OUT OF TOLERANCE`；无 NaN/inf，token 仍在 style 允许集内。**这就是要如实报的失败方式。**
+* **可命中包络**（3 style × 正前/侧向 × 5 距离）：`walk` 正前 4 m / 侧向 2 m、
+  `slow_walk` 4 / 3 m、`walk_zombie` 2 / 2 m；超出后误差单调上升。
+* **多帧窗口是另一个形状**：2–4 个点的*运动*窗口实测滞后 0.745–1.47 m —— 模型擅长收敛到
+  **保持型**窗口。所以 1 个点是精确档，2–4 个点是带滞后的轨迹档，两者同一张容差表判定。
+
+**④ 不摆目标时逐字节不变**：GPU `ccda1952…a7c5`、CPU `262e77d4…b64a`，各自与
+`out/plan-mlx-gpu.json` / `out/plan-mlx.json` **逐字节相同**；跨版 5 seed × 6 步门
+（复用 `/tmp/r5/campaign.py`，对比 `c81d8ee` worktree）：
+`pose.tokens` **30/30**、`sampling_uniforms` **30/30**、时长 token **30/30**、
+**0/2416** 决策不同、动作偏差 **0.000e+00**（root 与 rotation 都恰好 0）。
+另外测试把"无目标请求不回新 key、也不给 planner 传新关键字"写成契约，并把
+"目标规划之后的默认规划与之前逐位相同"也测了。
+
+**⑤ 画面**：无头 Chrome（REA `capture_browser_scenario`）**只做 goto + wait**，
+`page-errors`/`console` 都是 **0**。主图 `artifacts/viewer-targets-shots/live-off-settle.png`
+（sha256 `fcce818b80394b74…`）：橙色幽灵**站在橙色圆环上**（目标 `(0,3)`），绿色角色走到半途，
+HUD `TARGET 0.111 m`；`tall-1180-settle.png`（`c41027072633ec35…`）里侧栏面板整块可见，
+状态行 `1 placed · hit frames 40–43 · root 0.1113 m (tol 0.15) · heading 0.55° · joints 0.1259 m ·
+within tolerance`。每张 PNG 解码后重算 sha256 与证据比对。
+
+**⑥ pytest**：**278 passed, 1 skipped**（起点 242/1）。新增 `tests/test_mlx_targets.py`（20）
+与 `tests/test_viewer_targets.py`（16）：前者含"对齐规则重推导"、"位移单调"、"可达目标在容差内"、
+"50 m 不可达目标如实报告"；后者含"无目标请求协议不变"（stub）、"目标请求走真实 HTTP + 真 MLX
+并检查命中块"、"坏目标 400 而非崩溃"、"页面确实带上了这些控件"。
+
+**⑦ load**：本轮全程 1 分钟 load average 见下表（机器不空闲；桌面进程 mihomo、WindowServer、
+DSH renderer、Chrome、Lark，另有上一轮遗留的 8848 viewer 进程）。跨配置对比都是同进程交错 /
+同进程内配对，跨 B 的每档单独进程——本轮没有 B 相关测量。
+
+| 时刻 | load 1min |
+|---|---|
+| 起服务 | 18.09 |
+| 默认路径 sha256 + HTTP 扫 | 7.77–8.99 |
+| 测试 / 跨版门 | 8.75 |
+| 收尾 | 见 `git log` 那段的时间戳 |
+
+**⑧ 诚实边界**：见 `docs/VIEWER.md` 第 7 节（包络有限、多帧滞后、关节姿态只有两档 +
+一个无界面的高阶入口、y 不是用户自由度、无碰撞/IK、一次目标规划是一次性的、
+容差是我定的而参考实现没有"命中度"这个概念）。**明确不说**：我没有验证 50 m 那类动作
+"看起来像不像走路"（那需要人来判），只报告了峰值速度这个可量化的荒谬性。
+
+**⑨ 红线遵守**：只新增/改动 `viewer/**`、`scripts/mlx_viewer.py`、
+`scripts/mlx_plan_targets.py`（新）、`src/motionbricks_mlx/data/targets.py`（新）、
+`tests/test_mlx_targets.py`（新）、`tests/test_viewer_targets.py`（新）、
+`docs/VIEWER.md`（追加）、`docs/status-deepseek.md`（追加）、`artifacts/viewer-targets-*/**`；
+`training/**`、`train_*.py`、`eval/**`、`scripts/eval_*.py`、`tests/test_eval_*.py`、
+`docs/motion-representation.md`、`README.md`、`NOTICE`、`LICENSE`、`pyproject.toml` 未动；
+`mlx_plan.py`/`mlx_align.py` 语义未动；参考仓库 `~/dev/motion-bricks-cpp` **全程只读**；
+无新依赖；**无 push**。

@@ -42,6 +42,19 @@ Protocol
     reset    1 to reseed the agent from the style      (default 0)
     advance  frames of the current clip already shown  (default 0)
     argmax   1 for diagnostic argmax sampling          (default 0)
+    targets  user-placed target keyframes, "x,z,deg;x,z,deg" (up to 4)
+    target_space  "world" (default) or "offset" from the clip start
+    pose_mode     "style" (default) or "hold" the clip's starting pose
+
+``targets`` is the *external* half of the transition boundary: the model's target
+window is boundary frames 4..7 (``src/root.cpp:366``), normally manufactured from
+a style clip by ``build_constraints``, and ``targets`` replaces those 4 samples
+outright.  Each entry is a world point plus a world facing in degrees; a single
+target is held across all 4 samples, which is the shape that tracks best
+(measured; see ``src/motionbricks_mlx/data/targets.py``).  When ``targets`` is
+present the response gains two keys -- ``placed_targets`` (the window that was
+asked for) and ``target_hit`` (measured root / heading / joint error against the
+declared tolerances) -- and nothing else about the response changes.
 
 ``advance`` is the continuity seam and is worth stating precisely: the agent's
 planning context is the *last four frames of its current motion*, and
@@ -79,6 +92,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from motionbricks_mlx.data.agent import Agent, Command          # noqa: E402
 from motionbricks_mlx.data.style import load_style              # noqa: E402
+from motionbricks_mlx.data.targets import (measure_hit, plan_with_targets,  # noqa: E402
+                                           resolve_world_targets)
 from motionbricks_mlx.export.plan_json import FPS               # noqa: E402
 from motionbricks_mlx.models.bundle import Bundle               # noqa: E402
 from motionbricks_mlx.models.transition import MlxPipeline      # noqa: E402
@@ -224,7 +239,8 @@ class Planner:
         return self._style_cache[name]
 
     def plan(self, style: str, seed: int, move, facing, reset: bool, advance: int,
-             argmax: bool = False) -> dict:
+             argmax: bool = False, targets=None, target_space: str = "world",
+             pose_mode: str = "style") -> dict:
         loaded = self.style(style)
         with self.lock:
             if reset or self._agent is None or self._agent_style != style:
@@ -238,7 +254,29 @@ class Planner:
                               facing=(float(facing[0]), 0.0, float(facing[1])),
                               seed=int(seed), sampling_argmax=bool(argmax))
             started = time.perf_counter()
-            motion, _ = self._agent.plan(command, loaded)
+            # Placed targets take the additive path; with none, this is exactly
+            # the accepted Agent.plan call, unchanged.
+            placed = resolve_world_targets(self._agent, targets, target_space) if targets \
+                else []
+            if placed:
+                motion, _, window = plan_with_targets(self._agent, command, loaded, placed,
+                                                     pose_mode)
+                hit = measure_hit(motion, window, self.parents, self.rest)
+                placed_payload = {
+                    "count": len(window.placed),
+                    "pose_mode": window.pose_mode,
+                    "frames": window.frames,
+                    "space": target_space,
+                    "world_roots": [[float(v) for v in row] for row in window.world_roots],
+                    "world_headings_deg": [float(v) for v in window.world_headings_deg],
+                    "requested": [{"x": float(t.x), "z": float(t.z),
+                                   "heading_deg": float(t.heading_deg)}
+                                  for t in window.placed],
+                }
+            else:
+                motion, _ = self._agent.plan(command, loaded)
+                hit = None
+                placed_payload = None
             plan_ms = (time.perf_counter() - started) * 1000.0
             self.stats.record(plan_ms)
             roots = np.asarray(motion.roots, dtype=np.float64)
@@ -253,7 +291,7 @@ class Planner:
 
         frames = int(roots.shape[0])
         travel = float(np.linalg.norm(np.diff(roots, axis=0), axis=1).sum()) if frames > 1 else 0.0
-        return {
+        payload = {
             "ok": True,
             "style": style,
             "seed": int(seed),
@@ -280,6 +318,12 @@ class Planner:
                        "server_total_ms": round(plan_ms + fk_ms, 4)},
             "sampling": "argmax" if argmax else "gumbel",
         }
+        if placed_payload is not None:
+            # Additive: only a plan that placed targets carries these keys, so
+            # every existing consumer sees the same response as before.
+            payload["placed_targets"] = placed_payload
+            payload["target_hit"] = hit
+        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -449,8 +493,19 @@ class Handler(BaseHTTPRequestHandler):
         reset = str(request.get("reset", "0")).lower() in ("1", "true", "yes", "on")
         advance = int(request.get("advance", 0) or 0)
         argmax = str(request.get("argmax", "0")).lower() in ("1", "true", "yes", "on")
+        targets = request.get("targets")
+        target_space = str(request.get("target_space") or "world").lower()
+        pose_mode = str(request.get("pose_mode") or "style").lower()
+        if not targets:
+            # Untouched call shape for every request that does not place a
+            # target: the response is the same document it was before, and an
+            # alternative ``plan`` implementation needs no new keyword arguments.
+            return planner.plan(style=style, seed=seed, move=move, facing=facing,
+                                reset=reset, advance=advance, argmax=argmax)
         return planner.plan(style=style, seed=seed, move=move, facing=facing,
-                            reset=reset, advance=advance, argmax=argmax)
+                            reset=reset, advance=advance, argmax=argmax,
+                            targets=targets, target_space=target_space,
+                            pose_mode=pose_mode)
 
 
 class Server(HTTPServer):

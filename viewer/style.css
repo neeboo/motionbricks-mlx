@@ -101,3 +101,45 @@ input[type="number"], input[type="text"] { width:100%; color:#f2f6fb; background
 }
 #mlx-hud .hud-key { color:#6b7b90; letter-spacing:.06em; text-transform:uppercase; font-weight:700; }
 #mlx-hud .hud-value { color:#d9fff3; text-align:right; }
+
+/* ------------------------------------------------------------------ */
+/* Placed target keyframes (this round).                              */
+/*                                                                    */
+/* A sidebar panel plus the in-canvas orange markers. `#ff763b` is    */
+/* the target colour the reference already uses for the placed        */
+/* keyframe skeletons, so the marker, the ghost and the swatch in the */
+/* legend all read as the same thing.                                 */
+/* ------------------------------------------------------------------ */
+#mlx-target-panel {
+  margin:16px 0 0; padding:12px; border:1px solid #3a2d22; border-radius:10px;
+  background:#191512;
+}
+.mlx-target-title { margin:0 0 6px; color:#ffb089; font-size:11px; font-weight:750;
+  letter-spacing:.08em; text-transform:uppercase; }
+.mlx-target-help { margin:0 0 10px; color:#9d8c80; font-size:11px; line-height:1.45; }
+.mlx-target-help b { color:#ffc9a8; font-weight:700; }
+#mlx-target-panel .mlx-row { grid-template-columns:1fr 1fr; margin-top:8px; }
+#mlx-target-panel button {
+  color:#ffd9c4; background:#241a14; border:1px solid #6b452c;
+  border-radius:8px; padding:9px 10px; font:inherit; font-size:12px; cursor:pointer;
+}
+#mlx-target-panel button:hover { background:#33231a; border-color:#c2703c; }
+#mlx-target-panel button[aria-pressed="true"] { background:#7a3a14; border-color:#ff9d63;
+  color:#fff2e8; }
+#mlx-target-list { list-style:none; margin:10px 0 0; padding:0; }
+#mlx-target-list li {
+  display:grid; grid-template-columns:auto repeat(3, minmax(0,1fr)) auto;
+  gap:6px; align-items:center; margin-top:6px;
+}
+#mlx-target-list .target-index { color:#ffb089; font-size:11px; font-weight:750; }
+#mlx-target-list input { padding:5px 6px; font-size:11px; }
+#mlx-target-list .target-drop {
+  padding:4px 8px; font-size:11px; line-height:1;
+  background:#241a14; border:1px solid #6b452c; color:#ffd9c4; border-radius:6px; cursor:pointer;
+}
+#mlx-target-hit {
+  margin:10px 0 0; font-size:11px; font-variant-numeric:tabular-nums;
+  color:#ffc9a8;
+}
+#mlx-target-hit[data-state="ok"] { color:#7ef0c0; }
+#mlx-target-hit[data-state="miss"] { color:#ff9d7a; }
