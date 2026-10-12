@@ -2303,3 +2303,105 @@ git worktree add /tmp/r5/before 0e247ea
 
 ./.venv/bin/python -m pytest -q
 ```
+
+---
+
+# Round 6
+
+## 43. Frozen round-6 criteria
+
+Written and committed **before** any measurement or code change of this round, and
+not edited afterwards; the round-6 results are appended below it.  The round-3,
+round-4 and round-5 rules (21.3, 28.2-28.6, 35.2-35.5) are carried forward, and the
+items that are re-used are restated here so this section stands on its own.
+
+### 43.1 Subject — attribute the single pass with a *direct* instrument, then act on the finding
+
+Round 5 decomposed the homogeneous `B = 16` single pass into `1.98` (batched
+forwards, from `stage_throughput`) + `3.97` (host pass, from
+`host_pass_timing_single_pass` with injected rows) + **`2.29` unattributed**
+(41, section 38).  The residual is the *difference between two independently timed
+instruments*, and round 5's own section 38 says why that is not good enough: round
+4's `4.6x` prediction failed precisely because both of its baselines were
+optimistic in the same direction and nobody measured the thing itself.
+
+So this round replaces the subtraction with a **direct instrument**:
+
+1. `perf_counter` brackets are placed around **every segment of the single pass**,
+   inside the orchestrator that runs it: session setup; each host step
+   (`advance()` / `send()`); the shape grouping and request-keying; the input
+   stacking of each batched request; the forward call itself; the `mx.eval` drain;
+   the row slicing/scatter; and `finish_plan` (the agent maths and `decode_motion`).
+2. The same batch is timed once, and the segments are **accumulated per batch** so
+   that `sum(segments) vs total` is reported as an explicit **closure** number.  The
+   instrument must close: the segments are the timed region, so the closure residual
+   is bracket overhead plus the loop bookkeeping that no bracket covers, and it is
+   reported rather than hidden.
+3. The attribution must **separate** at least: batched forward (with the graph build
+   split from the `mx.eval` drain), host pass per its own sub-pieces
+   (`decode_motion`, the agent maths, the per-stage normalisation/glue), the
+   orchestration and row back-fill, and the gather/scatter and copies.
+4. The instrument must be **inert**: the profiled pass's `Run`s are compared with the
+   unprofiled arm's `Run`s bit for bit (`compare_bitwise`); if they differ, the
+   profile is invalid and is not quoted.  A run with `profile=None` (the default)
+   must be the accepted code path with no added brackets in the hot loop.
+5. The report states the **remaining unattributed amount** after closure, and, if it
+   is not ~zero, why.
+
+### 43.2 Correctness gate (21.3 / 28.2 / 35.2 carried forward)
+
+1. `scripts/mlx_align.py plan` and `scripts/mlx_align.py trace` do not regress:
+   `ALIGNMENT OK` / `TRACE OK`, with `pose.tokens`, `pose.sampling_uniforms` and
+   `decoder.quantized` at `0.000e+00`.
+2. For `N >= 5` seeds x 6 steps, `pose.tokens` and `pose.sampling_uniforms` are
+   element-for-element identical to the accepted default.
+3. The **final action deviation is reported even when it is zero**: max `|d|` on
+   `roots` (m), max `|d|` on `rotations_xyzw`, worst angle.
+4. Every change is measured **paired inside one process** on the identical scenario
+   set: the before-arm and after-arm run the same scenarios, the arm order rotates,
+   and the per-scenario ratio is reported (p50 with its IQR), not a ratio of two
+   separately timed runs.
+5. The **two batch arms must still agree bit for bit** (35.2 item 5), and any change
+   to the bake path must re-run the token campaign and recompute the margins; the
+   tier is recomputed from **this** round's campaign (0007/0008), never inherited.
+
+### 43.3 Adoption rule (12.2 / 21.3 / 28.3 / 35.3 carried forward)
+
+* A change is adopted as a default when **all three** hold: `pose.tokens` (and
+  `pose.sampling_uniforms`, and the selected duration) are bit-identical over the
+  `N >= 5` seeds x 6 steps gate; `mlx_align plan` / `trace` do not regress; and the
+  **paired** per-scenario improvement is measurable **and** the paired p50 ratio is
+  `>= 1.05x`.  A change that only moves a single-arm number is not adopted.
+* Anything that touches **the default single-scenario path** must leave both
+  document hashes unchanged: GPU
+  `ccda1952c967c8d7e893a795908f7de278f2acda1ce5ba1e1889692a8904a7c5` and CPU
+  `262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a`, each produced
+  with an explicit `--out`.  If a hash moves, the round fails regardless of speed.
+* Anything that changes the **bake** path (stage set, order, grouping, or the host
+  maths it executes) must re-run the campaign and recompute the margins, and the
+  tier is mechanically downgraded by 0008 (**release requires
+  `perturbation / min-margin <= 0.70`; `B > 8` requires duration-homogeneous
+  grouping; `B = 1` is never used**).  If any `B` fails, the tier drops to the
+  largest passing `B` under the threshold.
+* The 12 manifest fields of 0007/0008 remain mandatory on anything a bake produced,
+  including the honest `bake_action_bit_identical` value.
+
+### 43.4 Measurement discipline (0.3 / 12.3 / 21.3 / 28.4 / 35.4 carried forward)
+
+* Every measurement records the `uptime` **load average**; the machine is not idle
+  and the report says so, so absolute numbers are inflated by roughly 10 %.
+* Bake items are repeated `>= 5` times and reported as a median with the min beside
+  it; per-step items use `>= 25` steps per arm.
+* Same bundle, same seeds, same backend, same stage set within a comparison.
+* One instrument only: a segment's cost is quoted from **its own** bracket, never
+  from the difference of two other numbers.
+
+### 43.5 Reporting format fixed in advance
+
+The round-6 results report, in this order: the frozen criteria commit; the
+**closed decomposition table** (per-scenario ms and share per segment, the closure
+residual, and what remains unattributed and why); the **paired before/after numbers
+and the verdict for each change** (adopted / rejected, by the rule above); the two
+default-path hashes; the **re-run campaign margins and the tier conclusion**; the
+`mlx_align` / `pytest` results; `docs/SUMMARY.md` (the closing baseline, whose full
+text is also the deliverable); the load averages; and the git state.
