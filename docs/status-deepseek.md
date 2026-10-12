@@ -328,3 +328,69 @@ decision 0004 采用整组 f32 优化，我不从已裁定默认里偷偷摘开�
 `motion-representation.md`、`README.md`、`NOTICE`、`LICENSE`、`pyproject.toml` 未动；
 C 线脚本只读调用；`mlx_plan.py`/`mlx_align.py` 语义未改；所有 `mlx_plan.py` 调用都显式带 `--out`；
 参考仓库只读；**无 push**。
+
+---
+
+# Round 5（A 侧）：单趟编排器（single-pass orchestrator）
+
+**先钉判据再动手**：`docs/optimization-report.md` 第 35 节（commit `7495db2`，本轮第一个 commit，
+事后未改；`git diff --numstat 7495db2 HEAD -- docs/optimization-report.md` 只见 `+`）。
+
+**做法**：round 4 的 stage driver 靠**重启** `run_transition` 在阶段边界同步批次，每次重启都重跑一遍
+host glue（round 4 量化成 3.73 ms/场景，占批量时间 38 %）。本轮把 transition 变成**可恢复**的：
+
+- `MlxPipeline.transition_steps` = 已验收函数体变成**步骤生成器**，四个前向位置改成
+  `yield (stage, args, serial_call)`；归一化 / dense target / predicted local root / pose condition /
+  sampling / codebook gather / motion decode 全部是生成器的局部变量，跨 yield 存活——**一行数学都没挪**。
+- `run_transition` 退化成它的平凡驱动（14 行）+ `_stage_forward`，后者保持原有优先级
+  （bake → `pose_logits` seam → 已验收前向）。
+- `Agent.finish_plan` = `Agent.plan` 的后半段，编排器复用同一份 agent 数学。
+- `bake.drive_batch_single_pass`：每场景一个 `_SinglePassSession`，全部推进到本编排器拥有的阶段后，
+  **按 round 4 同样的 shape 分组**一次批量前向，回填，继续；每个 host 步骤每场景只跑一次，不重启。
+  `inject=` 用已录好的行重放一整趟，从而把 host 侧单独计时。
+- **`bake.drive_batch` / `StageDriver` 一行未动**——它是本轮对照臂；`compare_bitwise` 先钉住两臂
+  逐位相同，才允许引用加速比。
+
+**结果**
+
+- **端到端三臂（同进程、轮换顺序、9 次取中位数，load 见报告 40.4）**：
+  * 同 duration B=16：串行 504.66 ms → round 4 **3.140×** → 单趟 **3.720×**（单趟/round4 = 1.185×，
+    吞吐 117.95 场景/秒）。另三次运行（5/9/15 次重复、三种 load）给 3.485× / 3.687× / 3.572×，
+    round 4 臂 2.873× / — / 3.022×。**结论稳定：把 B=16 同构烘焙从 2.87–3.14× 抬到 3.49–3.72×。**
+  * 混合 B=16：串行 475.82 → round 4 2.309× → 单趟 **2.608×**（1.129×）。
+  * B=1 仍慢于串行（0.93–1.05×），0007 的"B=1 永不使用"不变。
+- **两臂逐位相同**（新判据）：每个 B、两种分组下 `tokens / uniforms / duration / roots / rotations`
+  全部 `16/16`，`bit_identical=true`。加速不是因为算了两件不同的事。
+- **战役（本轮重跑）**：62 个场景，**0/4864 个 token 决策不同**，duration 全部重选一致；
+  最终动作仍**不逐位**（roots ≤ 1.140e-06 m、rotations ≤ 2.753e-05 = 容差的 2.0e-03× / 1.4e-02×）。
+  裕度与 round 4 **逐位复现**：混合 0.2019 / 0.4843 / 0.6849 / 0.6695 / 1.0426，同构 0.6031 / 0.5290 / 0.4089，
+  最紧决策余量 2.985e-03。
+- **本轮档位**：campaign 每个 B 都通过，所以档位完全由裕度决定。**结论与 0007 一致：release B ≤ 8、
+  draft B ≥ 16、B=1 永不使用。** 但必须上报一个判据细节：**裕度对 B 非单调**——混合 B=4（0.6849×，1.46×）
+  比混合 B=8（0.6695×，1.49×）更差，两者都略低于字面上的 1/ratio ≥ 1.5。按字面算术，混合分组最大合格 B 是 2；
+  0007 批准文本把 0.6695 记作"1.5×"并据此给 B ≤ 8，本轮沿用该读法并把边界留给 lead 裁定。
+  0007 的 12 项 manifest 字段已落地为代码（`bake.manifest_fields` / `bake.bake_tier`），逐 B 写进 bench JSON，
+  含如实记录的 `bake_action_bit_identical=false`。
+- **数字纠错**：round 4 的"批量阶段 2.58 ms"把 `stage_throughput` 的**派生 root 行**（= probe + plan）
+  也加了进去，等于把 duration probe 数了两遍；只算四个前向是 2.02–2.80 ms（B=16）。本轮按修正后的口径算，
+  并把 round 4 口径并列在 JSON 里。
+- **4.6× 的预测没有兑现，原因在预测本身**：真实单趟是 8.24–8.48 ms/场景（= 前向 1.98 + host pass 3.97
+  + 2.29 未归因交互项），而 round 4 用两个各自乐观的仪器相减得到 6.19 ms。**直接配对测量才是诚实值**：
+  两臂同进程跑同样的行，round 4 臂减单趟臂 = **1.50–1.69 ms/场景**（B=16 同构），端到端 1.15–1.19×。
+  编排器值得做（零语义变化的 1.2×），但"B=16 4.6×"从来不可达。
+- **默认路径**：GPU 文档 `ccda1952…` == `out/plan-mlx-gpu.json`、CPU 文档 `262e77d4…` == `out/plan-mlx.json`，
+  逐字节一致；`mlx_align plan/trace` OK（tokens / uniforms / quantized 全 0）；**5 seed × 6 步前后对照**
+  （`0e247ea` 的 worktree vs 本轮工作树）：tokens 30/30、uniforms 30/30、duration 30/30 逐位一致，
+  0/2416 决策不同，最终动作偏差 **恰好 0.000e+00**；`pytest` **204 passed / 1 skipped**（起点 199/1，只增不减）。
+- **下一步（量化上限）**：B=16 同构单趟 8.24 ms/场景 = 前向 1.98（24 %）+ **host pass 3.97（48 %）**
+  + 未归因 2.29（28 %）。① 先把 2.29 ms 的未归因项拆开（单趟里第二大成分，且它同时也是 round 4 臂
+  3.95–4.11 残差的主要部分）——在归因完成前不该优化它；② 再动 host pass：减半 → 4.7×，归零 → **7.4× 上限**。
+  本轮**没有**顺手改宿主数学。
+
+**红线遵守**：只改 `src/motionbricks_mlx/models/**`（`transition.py` 抽生成器、`bake.py` 追加编排器与
+manifest 助手）、`src/motionbricks_mlx/data/agent.py`（抽出 `finish_plan`）、`scripts/mlx_bench.py`
+（追加 `--bake-single-pass`，既有语义不变）、`tests/test_mlx_bake.py`（+5 个测试）、
+`docs/optimization-report.md`（追加第 35–42 节）、本文件；`training/**`、`train_*.py`、`eval/**`、
+`scripts/eval_*.py`、`tests/test_eval_*.py`、`motion-representation.md`、`README.md`、`NOTICE`、
+`LICENSE`、`pyproject.toml` 未动；参考仓库只读；`mlx_plan.py`/`mlx_align.py` 语义未改；
+所有 `mlx_plan.py` 调用都显式带 `--out`；**无 push**。

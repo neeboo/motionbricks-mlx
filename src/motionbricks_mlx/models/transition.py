@@ -71,6 +71,12 @@ class TransitionResult:
     trace: dict[str, np.ndarray] = field(default_factory=dict)
 
 
+#: The accepted forward that answers each of the four step-generator requests, as
+#: a method name on the round-4 bake driver (:mod:`motionbricks_mlx.models.bake`).
+_BAKE_FORWARD = {"probe": "duration", "plan": "plan", "pose": "pose",
+                 "decoder": "decoder"}
+
+
 class MlxPipeline:
     """Loads a bundle and runs the four inference stages in MLX."""
 
@@ -144,26 +150,29 @@ class MlxPipeline:
 
     # -- transition ------------------------------------------------------
 
-    def run_transition(self, constraints: TransitionConstraints, seed: int,
-                       sampling_argmax: bool = False,
-                       capture_trace: bool = False,
-                       pose_logits: mx.array | None = None,
-                       bake=None) -> TransitionResult:
-        """Run one transition.
+    def transition_steps(self, constraints: TransitionConstraints, seed: int,
+                         sampling_argmax: bool = False,
+                         capture_trace: bool = False):
+        """One transition as a **resumable step generator** (round 5).
 
-        ``pose_logits`` is the round-3 *bake seam*: when a caller supplies the pose
-        planner's output it is used as-is and the stage is skipped, so a batch
-        bake can substitute a batched forward while every other stage -- sampling,
-        the codebook gather, the decoder, the motion decode -- runs the accepted
-        code.  ``None`` (the default) is the accepted path, byte for byte.
+        Each neural forward is a ``yield`` of ``(stage, arguments, serial_call)``:
+        ``stage`` names the forward point (``probe`` / ``plan`` / ``pose`` /
+        ``decoder``), ``arguments`` are the positionals a batched forward needs,
+        and ``serial_call`` recomputes the accepted single-scenario forward from
+        those same arguments.  The caller ``send``s that stage's output back in.
 
-        ``bake`` is the round-4 *stage driver* (see
-        :mod:`motionbricks_mlx.models.bake`): an object with ``duration``,
-        ``plan``, ``pose`` and ``decoder`` methods that stands in for the four
-        neural forwards and may raise ``BakeSuspend`` to end the run early so a
-        batch can be synchronised at a stage boundary.  ``None`` (the default) is
-        again the accepted path: neither seam is entered, so the two are inert
-        unless a caller asks for them.
+        Every host-side intermediate -- normalisation, the dense target, the
+        predicted local root, the pose conditions, sampling, the codebook gather,
+        the motion decode -- is a local of this generator and therefore survives
+        across the yields.  That is what lets a bake run each host step **once**
+        per scenario instead of once per stage boundary: the single-pass
+        orchestrator (:func:`motionbricks_mlx.models.bake.drive_batch_single_pass`)
+        holds one of these generators per scenario and resolves the forward points
+        in lockstep.
+
+        :meth:`run_transition` drives exactly this generator with the accepted
+        forwards, so the accepted single-scenario path is this code, in this
+        order: this is a refactor of it, never a second implementation.
         """
         trace: dict[str, np.ndarray] = {}
         fast = nn._opt("transition_fast")
@@ -233,21 +242,18 @@ class MlxPipeline:
         if enabled == 1:
             tokens = 6 + int(np.flatnonzero(allowed)[0])
         elif enabled > 1:
-            if bake is not None and bake.batches("probe"):
-                mx_duration_logits = bake.duration(
-                    mx.array(normalized_global), mx.array(normalized_local),
-                    mx.array(normalized_poses), mx.array(global_mask),
-                    mx.array(local_mask), mx.array(pose_mask))
-            elif reuse_boundary:
-                mx_duration_logits, boundary = self.root.probe(
-                    mx.array(normalized_global), mx.array(normalized_local),
-                    mx.array(normalized_poses), mx.array(global_mask),
-                    mx.array(local_mask), mx.array(pose_mask))
+            probe_args = (mx.array(normalized_global), mx.array(normalized_local),
+                          mx.array(normalized_poses), mx.array(global_mask),
+                          mx.array(local_mask), mx.array(pose_mask))
+            # The probe answers with ``(logits, boundary)`` on every path, so the
+            # caller sees one protocol: the reuse switch returns the boundary
+            # tensors, every other path returns ``None`` for them (a batched probe
+            # has no pair, exactly as the round-4 driver behaved).
+            if reuse_boundary:
+                probe_call = lambda: self.root.probe(*probe_args)   # noqa: E731
             else:
-                mx_duration_logits = self.root.duration_logits(
-                    mx.array(normalized_global), mx.array(normalized_local),
-                    mx.array(normalized_poses), mx.array(global_mask),
-                    mx.array(local_mask), mx.array(pose_mask))
+                probe_call = lambda: (self.root.duration_logits(*probe_args), None)  # noqa: E731
+            mx_duration_logits, boundary = yield ("probe", probe_args, probe_call)
             duration_logits = np.asarray(mx_duration_logits)
             best = -np.inf
             tokens = 0
@@ -278,20 +284,16 @@ class MlxPipeline:
                 # normalized too (src/root.cpp:464-469).
                 dense_target[frame] = normalized_global[boundary_index]
                 dense_target_mask[frame, 0] = 1.0 if constraints.has_global_root[boundary_index] else 0.0
-        if bake is not None and bake.batches("plan"):
-            # Round-4 stage driver: a batched root forward replaces this one, and
-            # the accepted serial call is not made at all.
-            predicted_global = bake.plan(
-                mx.array(normalized_global), mx.array(normalized_local),
-                mx.array(normalized_poses), mx.array(global_mask), mx.array(local_mask),
-                mx.array(pose_mask), tokens, mx.array(dense_target),
-                mx.array(dense_target_mask), duration_logits=mx_duration_logits)
-        else:
-            _, predicted_global = self.root.plan(
-                mx.array(normalized_global), mx.array(normalized_local), mx.array(normalized_poses),
-                mx.array(global_mask), mx.array(local_mask), mx.array(pose_mask),
-                tokens, mx.array(dense_target), mx.array(dense_target_mask),
-                duration_logits=mx_duration_logits, boundary=boundary)
+        plan_args = (mx.array(normalized_global), mx.array(normalized_local),
+                     mx.array(normalized_poses), mx.array(global_mask),
+                     mx.array(local_mask), mx.array(pose_mask), tokens,
+                     mx.array(dense_target), mx.array(dense_target_mask))
+        # A batched root forward replaces this one entirely; the accepted serial
+        # call is only made when the caller does not own the stage.
+        predicted_global = yield (
+            "plan", plan_args,
+            lambda: self.root.plan(*plan_args, duration_logits=mx_duration_logits,
+                                   boundary=boundary)[1])
         # Round-3 switch ``pred_local_defer``: keep the predicted-local-root block
         # on the device, so the root planner's output is not read back to the host
         # and the synchronisation that used to happen here disappears into the
@@ -393,14 +395,11 @@ class MlxPipeline:
         pose_tokens = np.full((tokens, 8), 10, dtype=np.int32)
         pose_condition_device = mx.array(pose_condition)
         has_pose_device = mx.array(has_pose_condition.astype(np.float32)[:, None])
-        if bake is not None and bake.batches("pose"):
-            logits = bake.pose(pose_tokens, pose_root_argument, pose_condition_device,
-                               has_pose_device, tokens, tokens)
-        else:
-            logits = (self.pose.plan(pose_tokens, pose_root_argument, pose_condition_device,
-                                     has_pose_device, tokens, tokens)
-                      if pose_logits is None
-                      else pose_logits)
+        pose_args = (pose_tokens, pose_root_argument, pose_condition_device,
+                     has_pose_device, tokens, tokens)
+        # ``bake`` supersedes the round-3 ``pose_logits`` seam; ``_stage_forward``
+        # applies that precedence and the seam itself, so neither is decided here.
+        logits = yield ("pose", pose_args, lambda: self.pose.plan(*pose_args))
         logits_np = np.asarray(PosePlanner.reshape_logits(logits), dtype=np.float32)
         uniform = None
         if not sampling_argmax:
@@ -454,14 +453,10 @@ class MlxPipeline:
         # on the host, hand it straight to ``decode_motion`` instead of reading it
         # back and re-uploading it.  Same values either way -- this removes a
         # host synchronisation, not a computation.
-        if bake is not None and bake.batches("decoder"):
-            decoded_device = bake.decoder(
-                mx.array(quantized), external_argument, pose_condition_device,
-                has_pose_device, tokens)
-        else:
-            decoded_device = self.decoder.decode(
-                mx.array(quantized), external_argument, pose_condition_device,
-                has_pose_device, tokens)
+        decoder_args = (mx.array(quantized), external_argument, pose_condition_device,
+                        has_pose_device, tokens)
+        decoded_device = yield ("decoder", decoder_args,
+                                lambda: self.decoder.decode(*decoder_args))
         if capture_trace or not nn._opt("decoder_defer"):
             decoded = np.asarray(decoded_device, dtype=np.float32).reshape(frames, 413)
             decoded_argument = mx.array(decoded)
@@ -478,3 +473,58 @@ class MlxPipeline:
         if capture_trace:
             trace["decoded.roots"] = roots_np.reshape(-1).copy()
         return TransitionResult(roots_np, rotations_np, tokens, trace)
+
+    def run_transition(self, constraints: TransitionConstraints, seed: int,
+                       sampling_argmax: bool = False,
+                       capture_trace: bool = False,
+                       pose_logits: mx.array | None = None,
+                       bake=None) -> TransitionResult:
+        """Run one transition to completion -- the accepted single-scenario path.
+
+        This is the trivial driver over :meth:`transition_steps`: it hands every
+        forward request to :meth:`_stage_forward` and returns the value the
+        generator finally returns.  The accepted path is therefore the generator's
+        code, in the generator's order, byte for byte.
+
+        ``pose_logits`` is the round-3 *bake seam*: when a caller supplies the pose
+        planner's output it is used as-is and the stage is skipped, so a batch
+        bake can substitute a batched forward while every other stage -- sampling,
+        the codebook gather, the decoder, the motion decode -- runs the accepted
+        code.  ``None`` (the default) is the accepted path, byte for byte.
+
+        ``bake`` is the round-4 *stage driver* (see
+        :mod:`motionbricks_mlx.models.bake`): an object with ``duration``,
+        ``plan``, ``pose`` and ``decoder`` methods that stands in for the four
+        neural forwards and may raise ``BakeSuspend`` to end the run early so a
+        batch can be synchronised at a stage boundary.  ``None`` (the default) is
+        again the accepted path: neither seam is entered, so the two are inert
+        unless a caller asks for them.  (Round 5's single-pass orchestrator does
+        not use this entry point at all: it drives :meth:`transition_steps`
+        directly and never restarts a run.)
+        """
+        steps = self.transition_steps(constraints, seed, sampling_argmax, capture_trace)
+        try:
+            request = next(steps)
+            while True:
+                request = steps.send(self._stage_forward(request, bake, pose_logits))
+        except StopIteration as stop:
+            return stop.value
+
+    def _stage_forward(self, request, bake, pose_logits):
+        """Answer one forward request: the bake's row, the pose seam, or the call.
+
+        The precedence is the one the pre-round-5 code applied inline: a stage the
+        bake owns is answered by the bake, the ``pose_logits`` seam is consulted
+        only when the bake does not own the pose stage, and otherwise the accepted
+        forward runs.
+        """
+        stage, arguments, serial_call = request
+        if bake is not None and bake.batches(stage):
+            value = getattr(bake, _BAKE_FORWARD[stage])(*arguments)
+            # The probe's boundary tensors exist only on the serial reuse path
+            # (round-3 switch ``root_boundary_reuse``); a batched probe has none,
+            # which is what the pre-round-5 driver did as well.
+            return (value, None) if stage == "probe" else value
+        if stage == "pose" and pose_logits is not None:
+            return pose_logits
+        return serial_call()

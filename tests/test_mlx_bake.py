@@ -367,3 +367,196 @@ def test_driver_only_intercepts_the_stages_it_owns(monkeypatch):
     assert comparison["token_identical"] == len(batch)
     assert comparison["differing_tokens"] == 0
     assert result.stage_sizes["decoder"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Round 5: the single-pass orchestrator
+# ---------------------------------------------------------------------------
+
+def test_manifest_fields_follow_decision_0007():
+    """The tier needs both halves of the rule: campaign **and** margin.
+
+    Decision 0007 defines the release tier as `min`(campaign-passing `B`, margin
+    `>= 1.5x`), so a campaign that passes with the worst perturbation already at
+    the tightest decision margin is a *draft*, not a release -- which is exactly
+    the `B = 16` mixed case round 4 measured at `1.0426x`.
+    """
+    assert bake.BAKE_MANIFEST_FIELDS == (
+        "batch_size", "bake_tier", "bake_stages", "bake_stage_switches",
+        "bake_grouping", "bake_campaign_scenarios", "bake_token_decisions_differing",
+        "bake_worst_roots_m", "bake_worst_rotations", "bake_safety_ratio",
+        "bake_min_decision_margin", "bake_action_bit_identical")
+    # Campaign passed and 1/ratio = 1.89x: release.
+    assert bake.bake_tier(0.5290, True) == "reproducible"
+    # Campaign passed but 1/ratio = 0.96x: draft (round 4's mixed B=16).
+    assert bake.bake_tier(1.0426, True) == "draft"
+    # Campaign failed: draft whatever the ratio says.
+    assert bake.bake_tier(0.1, False) == "draft"
+    # The threshold itself belongs to the release side.
+    assert bake.bake_tier(1.0 / 1.5, True) == "reproducible"
+
+    comparison = {"scenarios": 16, "token_identical": 16, "uniform_identical": 16,
+                  "selected_identical": 16, "differing_tokens": 0,
+                  "worst_roots_m": 2.027e-06, "worst_rotations": 2.753e-05}
+    safety = {"pose_ratio": 1.0426, "pose_margin": 2.985e-03}
+    fields = bake.manifest_fields(batch_size=16, stages={"root", "pose", "decoder"},
+                                  grouping="duration-mixed", token_groups={"11": 5},
+                                  comparison=comparison, safety=safety)
+    assert set(fields) == set(bake.BAKE_MANIFEST_FIELDS)
+    assert fields["bake_tier"] == "draft"
+    assert fields["bake_stages"] == ["decoder", "pose", "root"]
+    assert fields["bake_stage_switches"] == ["bake_root_batch", "bake_decoder_batch"]
+    assert fields["bake_action_bit_identical"] is False
+    assert fields["bake_min_decision_margin"] == 2.985e-03
+
+
+@NEEDS
+def test_single_pass_matches_the_round4_driver_bit_for_bit(monkeypatch):
+    """Round 5's instrument check: the two batch arms may not differ at all.
+
+    The single-pass orchestrator resolves the same forwards on the same rows;
+    anything but exact equality would mean the throughput comparison against round
+    4 is measuring two different bakes, so it is asserted with no tolerance.
+    """
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND4_OPT)
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(4)
+    reference, _ = bake.record_serial(pipeline, bundle, batch, capture_stages=True)
+    round4 = bake.drive_batch(pipeline, bundle, batch, bake.batched_stages())
+    single = bake.drive_batch_single_pass(pipeline, bundle, batch, bake.batched_stages())
+    assert len(single.runs) == len(batch)
+    assert single.suspensions == 0 and single.drivers == []
+    cross = bake.compare_bitwise(round4.runs, single.runs)
+    assert cross["bit_identical"], cross["rows"]
+    assert cross["tokens_identical"] == len(batch)
+    assert cross["roots_identical"] == len(batch)
+    assert cross["rotations_identical"] == len(batch)
+    # And the campaign claim itself still holds against the serial reference.
+    comparison = bake.compare([record.run for record in reference], single.runs)
+    assert comparison["token_identical"] == len(batch)
+    assert comparison["uniform_identical"] == len(batch)
+    assert comparison["selected_identical"] == len(batch)
+    assert comparison["differing_tokens"] == 0
+
+
+@NEEDS
+def test_single_pass_runs_every_host_step_once(monkeypatch):
+    """The whole point: no `run_transition` restart, and the accepted prefixes
+    of an unowned stage run once per scenario instead of once per boundary.
+
+    With the round-3 stage set (``pose`` only) the probe and the root planner are
+    the *accepted* code, so they are the observable: round 4's driver runs them
+    once per stage boundary per scenario (twice), the single pass runs them once.
+    """
+    monkeypatch.delenv("MOTIONBRICKS_MLX_OPT", raising=False)
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(3)
+    stages = bake.batched_stages()
+    assert stages == frozenset({"pose"})
+    counts = {"probe": 0, "plan": 0, "restarts": 0}
+    originals = (pipeline.root.duration_logits, pipeline.root.plan,
+                 pipeline.run_transition)
+
+    def probe_spy(*args, **kwargs):
+        counts["probe"] += 1
+        return originals[0](*args, **kwargs)
+
+    def plan_spy(*args, **kwargs):
+        counts["plan"] += 1
+        return originals[1](*args, **kwargs)
+
+    def restart_spy(*args, **kwargs):
+        counts["restarts"] += 1
+        return originals[2](*args, **kwargs)
+
+    pipeline.root.duration_logits = probe_spy
+    pipeline.root.plan = plan_spy
+    pipeline.run_transition = restart_spy
+    try:
+        round4 = bake.drive_batch(pipeline, bundle, batch, stages)
+        after_round4 = dict(counts)
+        counts.update(probe=0, plan=0, restarts=0)
+        single = bake.drive_batch_single_pass(pipeline, bundle, batch, stages)
+        after_single = dict(counts)
+    finally:
+        (pipeline.root.duration_logits, pipeline.root.plan,
+         pipeline.run_transition) = originals
+
+    assert round4.suspensions >= len(batch)
+    # Round 4 restarts the transition at every boundary it owns; round 5 never
+    # restarts one, and the accepted prefix runs once per scenario.
+    assert after_single["restarts"] == 0
+    assert after_round4["restarts"] >= len(batch)
+    assert after_single["probe"] == len(batch)
+    assert after_single["plan"] == len(batch)
+    assert after_round4["probe"] == 2 * len(batch)
+    assert after_round4["plan"] == 2 * len(batch)
+    assert bake.compare_bitwise(round4.runs, single.runs)["bit_identical"]
+
+
+@NEEDS
+def test_single_pass_host_pass_runs_no_forward(monkeypatch):
+    """The decomposition instrument: injected rows must skip every batched forward.
+
+    ``host_pass_timing_single_pass`` is what separates the host glue from the
+    orchestration in the report, so it must not silently run a neural stage.
+    """
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", ROUND4_OPT)
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(2)
+    stages = bake.batched_stages()
+    campaign = bake.drive_batch_single_pass(pipeline, bundle, batch, stages)
+    calls = []
+    originals = (pipeline.root.duration_logits_batch,
+                 pipeline.root.plan_values_batch,
+                 pipeline.pose.plan_batch,
+                 pipeline.decoder.decode_batch)
+
+    def spy(name, original):
+        def wrapped(*args, **kwargs):
+            calls.append(name)
+            return original(*args, **kwargs)
+        return wrapped
+
+    (pipeline.root.duration_logits_batch, pipeline.root.plan_values_batch,
+     pipeline.pose.plan_batch, pipeline.decoder.decode_batch) = (
+        spy("probe", originals[0]), spy("plan", originals[1]),
+        spy("pose", originals[2]), spy("decoder", originals[3]))
+    try:
+        timing = bake.host_pass_timing_single_pass(pipeline, bundle, batch, stages,
+                                                   campaign.rows, repeats=2)
+    finally:
+        (pipeline.root.duration_logits_batch, pipeline.root.plan_values_batch,
+         pipeline.pose.plan_batch, pipeline.decoder.decode_batch) = originals
+    assert calls == []
+    assert timing["repeats"] == 2 and timing["per_scenario_ms_p50"] > 0.0
+
+
+@NEEDS
+def test_single_pass_subset_stage_set(monkeypatch):
+    """A subset stage set still batches only what it owns."""
+    monkeypatch.setenv("MOTIONBRICKS_MLX_OPT", "bake_root_batch=1")
+    bundle = Bundle(MLX_BUNDLE, device="gpu")
+    pipeline = MlxPipeline(bundle)
+    batch = scenarios(2)
+    stages = bake.batched_stages()
+    assert stages == frozenset({"pose", "root"})
+    calls = []
+    original = pipeline.decoder.decode
+
+    def spy(*args, **kwargs):
+        calls.append("decoder")
+        return original(*args, **kwargs)
+
+    pipeline.decoder.decode = spy
+    try:
+        single = bake.drive_batch_single_pass(pipeline, bundle, batch, stages)
+    finally:
+        pipeline.decoder.decode = original
+    # The decoder is not owned, so the accepted forward runs once per scenario.
+    assert len(calls) == len(batch)
+    assert single.stage_sizes == {"probe": len(batch), "plan": len(batch),
+                                  "pose": len(batch), "decoder": 0}

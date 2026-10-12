@@ -1923,3 +1923,383 @@ remaining floor; the **token campaign table** (per-`B` identity rate, differing
 decisions, worst action deviation, perturbation/margin) and the **recomputed tier**;
 the two default-path hashes; the `mlx_align` / `pytest` results; the load averages;
 the quantified next lever; and the git state.
+
+---
+
+# Round 5 results
+
+Everything below was written after the measurements.  Section 35 was not edited
+after it was committed (`7495db2`, the first commit of this round).
+
+## 36. What was extracted, and why the accepted path did not move
+
+Round 4's stage driver synchronises a batch by **restarting** the transition at
+every stage boundary (`BakeSuspend` unwinds `run_transition` and the run is
+started again later).  Each restart redoes the host glue up to that boundary and
+throws it away, which is where the 3.73 ms/scenario of section 33.3 came from.
+
+This round makes the transition resumable instead:
+
+* **`MlxPipeline.transition_steps`** is the accepted body of `run_transition` as a
+  **step generator**.  The four neural forwards became
+  `yield (stage, arguments, serial_call)`: the stage name, the positionals a
+  batched forward needs, and a thunk that runs the accepted single-scenario
+  forward.  Everything else -- the normalisation, the dense target, the predicted
+  local root, the pose conditions, sampling, the codebook gather, the motion
+  decode -- is a local of the generator and therefore survives across the yields.
+  No host step was moved, reordered or re-written.
+* **`run_transition`** is now the trivial driver over it (hand each request to
+  `_stage_forward`, return what the generator returns).  `_stage_forward` keeps
+  the exact precedence the pre-round-5 code applied inline: a stage the round-4
+  driver owns is answered by the driver, the round-3 `pose_logits` seam is
+  consulted only when the driver does not own the pose stage, and otherwise the
+  accepted forward runs.
+* **`Agent.finish_plan`** is the post-transition half of `Agent.plan`
+  (`Motion` + `restore_world` + `apply_context_blend` + the current-motion
+  bookkeeping), split out so the orchestrator finishes each scenario through the
+  accepted agent maths instead of re-implementing it.
+* **`bake.drive_batch_single_pass`** creates one `_SinglePassSession` per scenario
+  (its own reset agent, its own constraints, its own step generator), advances
+  every generator to the first forward it owns, resolves all of them for that
+  stage **in the same shape groups the round-4 driver uses**, sends the rows back
+  and repeats.  Each host step runs once per scenario, each forward once per
+  group, and nothing is restarted.  `inject=` replays rows captured from an
+  earlier pass so the host side can be timed with no neural work at all.
+* **`bake.drive_batch` / `StageDriver` were not touched.**  They are this round's
+  control arm, and `compare_bitwise` pins that the two arms produce identical
+  rows before any speedup is quoted.
+
+The accepted single-scenario path is the same arithmetic in the same order, and
+that is checked rather than asserted:
+
+* GPU `out/plan-mlx-gpu.json` and CPU `out/plan-mlx.json` are unchanged
+  byte for byte (40.1);
+* a **before/after campaign** of the same 5 seeds x 6 steps, run from a worktree
+  of `0e247ea` and from this tree, gives **30/30 bit-identical**
+  `pose.tokens` (0 of 2416 decisions different), 30/30 `sampling_uniforms`,
+  30/30 selected durations, and a final action deviation of exactly
+  `0.000e+00` m / `0.000e+00` (40.4).
+
+## 37. The three-arm end-to-end bake
+
+One process, one scenario set, three arms, order rotated inside every repeat,
+one untimed warm-up each, median of 9 repeats.  `serial` is `B` scenarios planned
+one after another through the accepted pipeline; `round 4` is `drive_batch`; 
+`single` is `drive_batch_single_pass`.  Every stage is batched
+(`--bake-stages all`).
+
+**Duration-mixed batch** (load `6.57 -> 5.81`):
+
+| B | serial p50 | round 4 p50 | speedup | single pass p50 | speedup | single / round 4 | single ms/scenario | throughput |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 33.21 ms | 34.17 | 0.972x | 31.65 | 1.049x | 1.080x | 31.65 ms | 31.60/s |
+| 2 | 56.80 | 41.20 | 1.379x | 38.63 | 1.470x | 1.066x | 19.32 | 51.77/s |
+| 4 | 119.01 | 102.36 | 1.163x | 93.96 | 1.267x | 1.089x | 23.49 | 42.57/s |
+| 8 | 240.45 | 149.81 | 1.605x | 145.34 | 1.654x | 1.031x | 18.17 | 55.04/s |
+| 16 | 475.82 | 206.04 | 2.309x | **182.44** | **2.608x** | **1.129x** | 11.40 | 87.70/s |
+
+**Duration-homogeneous batch** (load `15.34 -> 11.86`):
+
+| B | serial p50 | round 4 p50 | speedup | single pass p50 | speedup | single / round 4 | single ms/scenario | throughput |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 28.44 ms | 34.92 | 0.814x | 30.66 | 0.928x | 1.139x | 30.66 ms | 32.62/s |
+| 2 | 62.30 | 46.88 | 1.329x | 36.78 | 1.694x | 1.275x | 18.39 | 54.38/s |
+| 4 | 117.86 | 62.84 | 1.876x | 51.55 | 2.286x | 1.219x | 12.89 | 77.59/s |
+| 8 | 237.17 | 93.84 | 2.527x | 83.78 | 2.831x | 1.120x | 10.47 | 95.49/s |
+| 16 | 504.66 | 160.71 | 3.140x | **135.65** | **3.720x** | **1.185x** | 8.48 | 117.95/s |
+
+**`B = 16` homogeneous, second confirmation** (15 repeats, load `11.86 -> 11.09`):
+serial `471.13` -> round 4 `155.90` (3.022x) -> single `131.89` (**3.572x**),
+`single / round 4 = 1.182x`.  An earlier 5-repeat run at load `8.70 -> 8.88` gave
+`442.19 -> 153.92` (2.873x) `-> 126.89` (**3.485x**, 1.213x), and the 9-repeat run
+tabulated above gave `504.66 -> 160.71` (3.140x) `-> 135.65` (**3.720x**, 1.185x).
+The headline is therefore stable across four runs at three different loads: **the
+single pass takes the homogeneous `B = 16` bake from 2.87-3.14x to 3.49-3.72x**,
+and the duration-mixed `B = 16` bake from 2.31-2.37x to 2.61-2.64x.
+
+Two smaller facts, stated because the table shows them:
+
+* `B = 1` is still slower than serial in both groupings (0.93-1.05x): there is
+  nothing to amortise and a batched forward is never bitwise.  Decision 0007's
+  "never bake at `B = 1`" is unchanged.
+* Below `B = 4` the two batch arms are within noise of each other: the
+  re-execution the orchestrator removes is proportional to the batch's host work,
+  which is not amortised yet.
+
+## 38. The single pass, decomposed -- and a correction to round 4's projection
+
+Per scenario, homogeneous batches (same run as the table above; `stages`
+`inject`-free):
+
+| B | batched forwards | host pass | `stages + host` | measured single | residual | round-4 host | round-4 measured | round-4 residual |
+|---|---|---|---|---|---|---|---|---|
+| 4 | 5.76 ms | 4.03 | 9.79 | 12.89 | +3.09 | 3.90 | 15.71 | +6.04 |
+| 8 | 3.82 | 3.72 | 7.54 | 10.47 | +2.93 | 3.90 | 11.73 | +4.01 |
+| 16 | 2.02 | 3.55 | 5.57 | 8.48 | +2.91 | 3.91 | 10.04 | +4.11 |
+
+`B = 16` (15-repeat confirmation): forwards `1.98` + host `3.97` = `5.95`,
+measured `8.24`, residual `+2.29`; round-4 arm host `3.81`, measured `9.74`,
+residual `+3.95`.
+
+**Correction.**  Round 4's "batched stages 2.58 ms" summed **every** row of
+`stage_throughput`'s table, and that table contains the four forwards *plus* a
+derived `root` row that is `probe + plan` -- so it counted the duration probe
+twice.  The four forwards only are `2.02-2.80 ms` at `B = 16` here against the
+`2.74` round-4 basis of the same measurement.  Section 38's `stages` column is
+the corrected sum, and the round-4 basis is reported beside it in the JSON
+(`batched_stage_sum_with_derived_root_ms`).
+
+**What the orchestrator actually removes is measured directly**, not by
+subtracting two instruments: the two arms run the same rows in the same process,
+so their paired difference is the cost of the re-execution.
+
+| B (homogeneous) | round-4 measured | single measured | removed |
+|---|---|---|---|
+| 4 | 15.71 | 12.89 | 2.82 ms |
+| 8 | 11.73 | 10.47 | 1.26 ms |
+| 16 | 10.04 | 8.48 | **1.56 ms** |
+| 16 (15 repeats) | 9.74 | 8.24 | **1.50 ms** |
+| 16 (mixed) | 12.88 | 11.40 | 1.48 ms |
+
+**The 4.6x projection does not survive measurement, and the reason is the
+projection's own arithmetic.**  Round 4 predicted a single-pass cost of
+`2.58 + 3.62 = 6.19 ms/scenario` and therefore `28.37 / 6.19 = 4.6x`.  The real
+single pass costs `8.24-8.48 ms/scenario`, of which the two modelled components
+account for `5.57-5.95`; the remaining `2.3-2.9 ms` is an **interaction term**
+this instrument cannot split (the injected host pass never materialises the lazy
+condition graphs that the real forwards fold into their own evaluation, and the
+per-stage table times each forward alone in a tight loop).  Round 4's own
+decomposition had the same term -- its round-4 arm residual is `3.95-4.11` here
+-- so the difference between the arms, `~1.5 ms/scenario`, is the honest value of
+removing the re-execution, and the two-arm end-to-end ratio (`1.15-1.19x` at
+`B = 16` homogeneous) is the honest speedup.
+
+That is the useful negative result of this round: **the round-4 decomposition
+over-credited the driver's re-execution by roughly 2x**, because both of its
+baselines were optimistic in the same direction.  The orchestrator is still worth
+building -- it is a real 1.2x on top of the accepted batch bake, with no change
+to what is computed -- but the "4.6x at `B = 16`" figure was never reachable.
+
+## 39. The token campaign, the margins, and this round's tier
+
+Re-run from scratch on this round's campaign (the criteria say round 4's numbers
+may not be inherited, because the orchestrator changes the order in which the
+batch's forwards are issued).  Every row compares each scenario of the batch with
+**the same scenario run alone**.
+
+| grouping | B | scenarios | tokens | uniforms | duration | differing tokens | worst roots | worst rotations | worst angle | perturbation / margin |
+|---|---|---|---|---|---|---|---|---|---|---|
+| mixed | 1 | 1 | 1/1 | 1/1 | 1/1 | 0/88 | 9.090e-07 m | 1.144e-05 | 0.0437 deg | 0.2019x |
+| mixed | 2 | 2 | 2/2 | 2/2 | 2/2 | 0/176 | 5.923e-07 | 8.292e-06 | 0.0452 | 0.4843x |
+| mixed | 4 | 4 | 4/4 | 4/4 | 4/4 | 0/296 | 5.923e-07 | 8.292e-06 | 0.0454 | 0.6849x |
+| mixed | 8 | 8 | 8/8 | 8/8 | 8/8 | 0/536 | 1.267e-06 | 8.076e-06 | 0.0626 | 0.6695x |
+| mixed | 16 | 16 | 16/16 | 16/16 | 16/16 | 0/1040 | 2.027e-06 | 1.052e-05 | 0.0537 | 1.0426x |
+| homog. | 1 | 1 | 1/1 | 1/1 | 1/1 | 0/88 | 9.090e-07 | 1.144e-05 | 0.0437 | 0.2019x |
+| homog. | 2 | 2 | 2/2 | 2/2 | 2/2 | 0/176 | 5.923e-07 | 8.292e-06 | 0.0452 | 0.2441x |
+| homog. | 4 | 4 | 4/4 | 4/4 | 4/4 | 0/352 | 8.047e-07 | 5.804e-06 | 0.0590 | 0.6031x |
+| homog. | 8 | 8 | 8/8 | 8/8 | 8/8 | 0/704 | 6.258e-07 | 8.434e-06 | 0.0582 | 0.5290x |
+| homog. | 16 | 16 | 16/16 | 16/16 | 16/16 | 0/1408 | 1.140e-06 | 2.753e-05 | 0.0541 | 0.4089x |
+
+**All 62 scenarios, 0 of 4864 token decisions differ, every duration is
+re-selected identically, and every margin is reproduced from round 4 to four
+significant figures** (`0.2019 / 0.4843 / 0.6849 / 0.6695 / 1.0426` mixed,
+`0.6031 / 0.5290 / 0.4089` homogeneous, min decision margin `2.985e-03`).  The
+final action is still **not** bit-identical (worst `2.027e-06 m` on `roots`,
+`2.753e-05` on `rotations`, i.e. `2.0e-03x` and `1.4e-02x` of `mlx_align`'s
+tolerances), exactly as decision 0007 records.
+
+### 39.1 The two batch arms are bit-identical (the new instrument check)
+
+For every `B` in both groupings, `compare_bitwise(round4.runs, single.runs)`
+reports `tokens 16/16, uniforms 16/16, duration 16/16, roots 16/16,
+rotations 16/16, bit_identical = true`.  The two arms resolve the same forwards on
+the same rows, so the speedup in section 37 cannot be a different computation.
+
+### 39.2 Tier
+
+The rule is decision 0007's, applied to **this round's** campaign: the tier is
+the `min` of the largest campaign-passing `B` and the largest `B` whose safety
+margin is `>= 1.5x`, taken on the least favourable grouping.  The campaign passes
+at every `B` in both groupings, so the tier is decided entirely by the margin:
+
+| B | least favourable ratio | headroom | verdict |
+|---|---|---|---|
+| 1 | 0.2019x | 5.0x | passes (but `B = 1` is never used) |
+| 2 | 0.4843x | 2.1x | passes |
+| 4 | 0.6849x | 1.46x | **below 1.5x** |
+| 8 | 0.6695x | 1.49x | at the threshold (round 4 recorded this row as "1.5x") |
+| 16 | 1.0426x | 0.96x | **no headroom** |
+
+**Conclusion: the tier is unchanged -- release `B <= 8`, draft `B >= 16`,
+`B = 1` never -- because this round's margins reproduce round 4's**, and the lead
+ratified `B <= 8` from this exact evidence in decision 0007.
+
+One thing this round must flag rather than smooth over: the margin test is **not
+monotone in `B`**.  The mixed `B = 4` batch (`0.6849x`) is *worse* than the mixed
+`B = 8` batch (`0.6695x`), and both are a hair below a literal `1 / ratio >= 1.5`
+(`1.46x` and `1.49x`).  Read as raw arithmetic, "the largest `B` with `>= 1.5x`
+headroom" is `B = 2` for the mixed grouping, not `B = 8`.  Round 4's table has the
+same two rows and wrote them as "1.5x", and decision 0007's approval quotes
+`0.6695x` as the `B <= 8` evidence, so this round reports the ratified tier
+(`B <= 8`) and leaves the boundary to the lead: what the rule actually needs is
+"every `B` that will be used must pass", not "the largest passing `B` bounds the
+ones below it".  The manifest helper implements the literal rule, so the JSON
+records the mixed `B = 4` / `B = 8` rows as `draft` and the homogeneous rows as
+`reproducible` -- that difference *is* the boundary in question.
+
+### 39.3 The manifest block, now code
+
+Decision 0007's fields are assembled by `bake.manifest_fields` from the campaign
+that was actually run, and emitted per `B` in the bench JSON
+(`bake.BAKE_MANIFEST_FIELDS`, `bake.bake_tier`).  On this build, `B = 16`
+homogeneous:
+
+```
+batch_size                 16
+bake_tier                  reproducible        (mixed: draft)
+bake_stages                ["decoder", "pose", "root"]
+bake_stage_switches        ["bake_root_batch", "bake_decoder_batch"]
+bake_grouping              {"mode": "duration-homogeneous", "token_groups": {"11": 16}}
+bake_campaign_scenarios    16
+bake_token_decisions_differing  0
+bake_worst_roots_m         1.140e-06
+bake_worst_rotations       2.753e-05
+bake_safety_ratio          0.4089
+bake_min_decision_margin   2.985e-03
+bake_action_bit_identical  false
+```
+
+## 40. Default path, alignment, tests, load, and the pre-round-5 control
+
+### 40.1 The default path is byte-identical
+
+```
+./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/r5/step-gpu.json
+./.venv/bin/python scripts/mlx_plan.py --device cpu --out /tmp/r5/step-cpu.json
+ccda1952c967c8d7e893a795908f7de278f2acda1ce5ba1e1889692a8904a7c5  /tmp/r5/step-gpu.json == out/plan-mlx-gpu.json
+262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a  /tmp/r5/step-cpu.json == out/plan-mlx.json
+```
+
+`mlx_align plan` -> `ALIGNMENT OK` (worst margin `0.26x` tolerance);
+`mlx_align trace --device gpu` -> `TRACE OK`, with `pose.tokens`,
+`pose.sampling_uniforms` and `decoder.quantized` at `0.000e+00`.
+
+### 40.2 Tests
+
+`pytest -q` -> **204 passed / 1 skipped**, against the 199 passed / 1 skipped
+this round started from.  Five tests were added (all in `tests/test_mlx_bake.py`)
+and none was changed or removed:
+
+* `test_manifest_fields_follow_decision_0007` -- the tier needs the campaign
+  **and** the margin;
+* `test_single_pass_matches_the_round4_driver_bit_for_bit`;
+* `test_single_pass_runs_every_host_step_once` -- with the round-3 stage set the
+  accepted probe and root planner run **once** per scenario in the single pass and
+  **twice** per scenario in the round-4 driver, and `run_transition` is called
+  zero times by the orchestrator;
+* `test_single_pass_host_pass_runs_no_forward` -- the decomposition instrument
+  must not silently run a neural stage;
+* `test_single_pass_subset_stage_set`.
+
+Round 4's own bake CLI path was re-run unchanged as a control
+(`--bake-stages all --bake 4,8,16 --bake-homogeneous --bake-repeats 5`): it
+produces the round-4 table shape and the round-4 safety numbers
+(`0.6031x / 0.5290x / 0.4089x`), so the accepted bake path did not move either.
+
+### 40.3 The pre-round-5 control campaign (5 seeds x 6 steps)
+
+Run from a `git worktree` of `0e247ea` and from this tree, in the same process
+shape, on the GPU backend:
+
+```
+seeds x steps      : 30 plans (5 seeds x 6 steps)
+pose.tokens        : 30/30 bit-identical, 0/2416 tokens differ
+sampling_uniforms  : 30/30 bit-identical
+selected duration  : 30/30 identical
+final roots        : worst |d| 0.000e+00 m
+final rotations    : worst |d| 0.000e+00
+```
+
+### 40.4 Load
+
+The machine is a shared desktop and was not idle; every table above carries its
+own load average, and no measurement was taken on an idle machine:
+
+| run | load before -> after |
+|---|---|
+| mixed, 3 arms, 5 repeats | 7.16 -> 7.20 |
+| homogeneous, 3 arms, 5 repeats | 8.70 -> 8.88 |
+| round-4 control (`drive_batch` only) | 8.76 -> 8.26 |
+| mixed, 3 arms, 9 repeats | 6.57 -> 5.81 |
+| homogeneous, 3 arms, 9 repeats (table 37) | 15.34 -> 11.86 |
+| homogeneous, 3 arms, 9 repeats (superseded) | before not captured -> 5.12 |
+| homogeneous `B = 16`, 15 repeats | 11.86 -> 11.09 |
+| before/after 5x6 campaign | 8.39 -> 8.04 |
+| `pytest -q` | 8.26 -> 7.69 |
+
+## 41. The next lever, quantified
+
+`B = 16` homogeneous, 15 repeats, per scenario (`29.45 ms` serial):
+
+| component | ms/scenario | share of the single pass | what it is |
+|---|---|---|---|
+| batched forwards | 1.98 | 24 % | already 7.5-11.5x on its own; not worth another round |
+| **host pass** | **3.97** | **48 %** | `decode_motion`, the agent maths, the per-stage normalisation/glue, and the generator bookkeeping |
+| unattributed residual | 2.29 | 28 % | the interaction section 38 could not split |
+| **single pass** | **8.24** | 100 % | |
+
+So the host side is now the **terminal floor**, not the driver: with the batched
+forwards free, `B = 16` homogeneous would cost `3.97 ms/scenario`, a ceiling of
+`29.45 / 3.97 = 7.4x` -- versus the `3.57x` measured.  Two quantified steps, in
+the order they should be taken:
+
+1. **Attribute the 2.29 ms residual before touching anything** (28 % of the pass,
+   second only to the host pass itself).  It is the difference between the
+   measured pass and the sum of two independently timed instruments, so it is
+   either real overlap that the model misses or real work the model omits; a
+   single experiment -- timing the orchestrator with only *some* stages injected
+   -- separates the two.  Nothing should be optimised on the strength of a number
+   that has not been attributed.
+2. **Then the host pass**: halving it (a plausible outcome of moving the agent
+   maths into the graph, which round 2 rejected at `B = 1` and which is a
+   different question at `B = 16` with 16 scenarios in flight) takes
+   `8.24 -> 6.25 ms/scenario`, i.e. `4.7x`; removing it entirely is the `7.4x`
+   ceiling.  As the criteria say, no host maths was rewritten this round.
+
+## 42. Reproduction (round 5)
+
+```
+# the frozen criteria, committed before any measurement or code change
+git show --stat 7495db2
+
+# the three-arm end-to-end bake, both groupings, 9 repeats, JSON for the tables
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all --bake 1,2,4,8,16 \
+    --bake-repeats 9 --bake-single-pass --devices gpu --json /tmp/r5/r5-mixed.json
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all --bake 1,2,4,8,16 \
+    --bake-homogeneous --bake-repeats 9 --bake-single-pass --devices gpu \
+    --json /tmp/r5/r5-homog.json
+
+# the headline row, again, at 15 repeats
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all --bake 16 \
+    --bake-homogeneous --bake-repeats 15 --bake-single-pass --devices gpu \
+    --json /tmp/r5/r5-b16-homog.json
+
+# the round-4 control path, unchanged
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all --bake 4,8,16 \
+    --bake-homogeneous --bake-repeats 5 --devices gpu --json /tmp/r5/r4-control.json
+
+# the accepted path, both backends, and alignment
+./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/r5/step-gpu.json
+./.venv/bin/python scripts/mlx_plan.py --device cpu --out /tmp/r5/step-cpu.json
+diff -q /tmp/r5/step-gpu.json out/plan-mlx-gpu.json
+diff -q /tmp/r5/step-cpu.json out/plan-mlx.json
+./.venv/bin/python scripts/mlx_align.py plan out/ref/plan-ref.json /tmp/r5/step-gpu.json
+./.venv/bin/python scripts/mlx_align.py trace out/ref/trace/transition-0.json --device gpu
+
+# the pre-round-5 control campaign (worktree of 0e247ea) vs this tree
+git worktree add /tmp/r5/before 0e247ea
+./.venv/bin/python /tmp/r5/campaign.py /tmp/r5/before/src /tmp/r5/campaign-before.json
+./.venv/bin/python /tmp/r5/campaign.py "$PWD/src" /tmp/r5/campaign-after.json
+
+./.venv/bin/python -m pytest -q
+```

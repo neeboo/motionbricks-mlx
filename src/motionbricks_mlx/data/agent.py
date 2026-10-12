@@ -1103,6 +1103,26 @@ class Agent:
             has_global_root=np.ones(8, np.uint8),
             has_poses=np.ones(8, np.uint8))
 
+    def finish_plan(self, result, frame, constraints, command) -> tuple[Motion, dict]:
+        """The post-transition half of :meth:`plan`, on a supplied result.
+
+        Split out for the round-5 single-pass orchestrator: it drives the
+        transition's step generators itself (so each host step runs **once** per
+        scenario), then finishes each scenario through exactly this code -- which
+        is also what :meth:`plan` runs, so the two cannot drift apart.  ``result``
+        is a ``TransitionResult``; ``frame`` and ``constraints`` are what
+        :meth:`constraints_for` returned for the same command.
+        """
+        motion = Motion(result.roots, result.rotations_xyzw,
+                        constraints.target_root_translations,
+                        constraints.target_local_rotations_xyzw)
+        restore_world(motion, frame)
+        if not command.skip_context_blend:
+            apply_context_blend(self.context_roots, self.context_rotations, motion)
+        self.current_motion = motion
+        self.current_frame = 0
+        return motion, {"selected_tokens": result.selected_tokens, "trace": result.trace}
+
     def plan(self, command: Command, style: Style,
              capture_trace: bool = False,
              pose_logits=None, bake=None) -> tuple[Motion, dict]:
@@ -1122,12 +1142,4 @@ class Agent:
             constraints,
             seed=command.seed, sampling_argmax=command.sampling_argmax,
             capture_trace=capture_trace, pose_logits=pose_logits, bake=bake)
-        motion = Motion(result.roots, result.rotations_xyzw,
-                        constraints.target_root_translations,
-                        constraints.target_local_rotations_xyzw)
-        restore_world(motion, frame)
-        if not command.skip_context_blend:
-            apply_context_blend(self.context_roots, self.context_rotations, motion)
-        self.current_motion = motion
-        self.current_frame = 0
-        return motion, {"selected_tokens": result.selected_tokens, "trace": result.trace}
+        return self.finish_plan(result, frame, constraints, command)

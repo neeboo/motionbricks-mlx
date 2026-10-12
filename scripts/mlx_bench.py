@@ -378,6 +378,11 @@ def main() -> int:
                              "round-3 bake, 'root' adds the root stage, 'all' "
                              "adds the root and decoder stages (the two new "
                              "switches are default-off; this turns them on)")
+    parser.add_argument("--bake-single-pass", action="store_true",
+                        help="round 5: with --bake, time three arms -- serial, "
+                             "round-4 drive_batch and the round-5 single-pass "
+                             "orchestrator -- and pin that the two batch arms "
+                             "agree bit for bit")
     args = parser.parse_args()
 
     if not (args.bundle / "manifest.json").is_file():
@@ -392,7 +397,11 @@ def main() -> int:
             device = device.strip()
             if not device:
                 continue
-            if args.bake_stages == "pose":
+            if args.bake_single_pass:
+                report = bake_single_pass_measure(device, args.styles, args.bundle,
+                                                  sizes, args.seed, args.bake_repeats,
+                                                  homogeneous=args.bake_homogeneous)
+            elif args.bake_stages == "pose":
                 report = bake_measure(device, args.styles, args.bundle, sizes,
                                       args.seed, args.bake_repeats,
                                       homogeneous=args.bake_homogeneous,
@@ -613,6 +622,205 @@ def bake_full_measure(device: str, styles_dir: Path, bundle_path: Path, batch_si
                   f"speedup {row['speedup']:5.2f}x")
     bundle.release()
     return report
+
+# ---------------------------------------------------------------------------
+# Round 5: the single-pass orchestrator, three arms (appended, round 4 untouched)
+# ---------------------------------------------------------------------------
+
+def bake_single_pass_measure(device: str, styles_dir: Path, bundle_path: Path,
+                             batch_sizes, seed: int, repeats: int,
+                             homogeneous: bool = False) -> dict:
+    """Round-5 bake: **serial / round-4 batch / round-5 single pass** in one process.
+
+    The three arms run the identical scenario set inside one process, in a
+    **rotated** order per repeat, after one untimed warm-up each.  The round-4 arm
+    is :func:`bake.drive_batch` (unchanged, suspend-and-restart) and is this
+    round's control; the round-5 arm is :func:`bake.drive_batch_single_pass`,
+    which drives one resumable transition generator per scenario so every host
+    step runs once.  ``compare_bitwise`` pins that the two batch arms agree
+    exactly before any speedup from the third arm is quoted.
+
+    With ``homogeneous`` the batch also gets the stage table (measured on the
+    round-4 arm's recorded inputs, which are the same rows the single pass
+    consumes) and both host passes, which is what decomposes the single pass into
+    batched forward / host glue / orchestration overhead.
+    """
+    import statistics as _statistics
+    import time as _time
+
+    from motionbricks_mlx.models import bake as bake_module
+
+    stages = bake_module.batched_stages()
+    bundle = Bundle(bundle_path, device=device)
+    pipeline = MlxPipeline(bundle)
+    style_names = [STYLES[0]] if homogeneous else list(STYLES)
+    report: dict = {"device": device, "repeats": repeats, "homogeneous": homogeneous,
+                    "stages": sorted(stages), "batches": {}}
+    for size in batch_sizes:
+        scenarios = [
+            bake_module.Scenario(
+                label=f"B{size}-s{index}-{style_names[index % len(style_names)]}",
+                style=load_style(styles_dir / f"{style_names[index % len(style_names)]}.mbstyle"),
+                seed=seed + index,
+                movement=(0.2, 0.0, 0.0))
+            for index in range(size)]
+        # Reference arm with stage snapshots and the per-scenario single plan time.
+        reference, single = bake_module.record_serial(pipeline, bundle, scenarios,
+                                                      capture_stages=True)
+        # One untimed warm-up of each arm: the batched forwards and the generator
+        # machinery both compile on first use and must not be charged to a repeat.
+        bake_module.record_serial(pipeline, bundle, scenarios, capture_trace=False)
+        bake_module.drive_batch(pipeline, bundle, scenarios, stages, capture_trace=False)
+        bake_module.drive_batch_single_pass(pipeline, bundle, scenarios, stages,
+                                            capture_trace=False)
+
+        arm_order = ("serial", "batch", "single")
+        timings: dict[str, list[float]] = {name: [] for name in arm_order}
+        for repeat in range(repeats):
+            rotation = arm_order[repeat % len(arm_order):] + arm_order[:repeat % len(arm_order)]
+            for name in rotation:
+                started = _time.perf_counter()
+                if name == "serial":
+                    bake_module.record_serial(pipeline, bundle, scenarios,
+                                              capture_trace=False)
+                elif name == "batch":
+                    bake_module.drive_batch(pipeline, bundle, scenarios, stages,
+                                            capture_trace=False)
+                else:
+                    bake_module.drive_batch_single_pass(pipeline, bundle, scenarios,
+                                                        stages, capture_trace=False)
+                timings[name].append((_time.perf_counter() - started) * 1000.0)
+
+        campaign_batch = bake_module.drive_batch(pipeline, bundle, scenarios, stages,
+                                                 capture_trace=True)
+        campaign_single = bake_module.drive_batch_single_pass(
+            pipeline, bundle, scenarios, stages, capture_trace=True)
+        reference_runs = [record.run for record in reference]
+        comparison = bake_module.compare(reference_runs, campaign_single.runs)
+        control = bake_module.compare(reference_runs, campaign_batch.runs)
+        cross = bake_module.compare_bitwise(campaign_batch.runs, campaign_single.runs)
+        perturbations = bake_module.stage_perturbations(reference, campaign_single.runs)
+        margins = bake_module.decision_margins(reference)
+        groups: dict[str, int] = {}
+        for record in reference:
+            groups[str(record.tokens)] = groups.get(str(record.tokens), 0) + 1
+
+        def arm(name: str) -> dict:
+            values = timings[name]
+            median = _statistics.median(values)
+            return {
+                "p50_ms": median,
+                "min_ms": min(values),
+                "ms_per_scenario": median / size,
+                "throughput_per_s": size / (median / 1000.0),
+                "times_ms": values,
+            }
+
+        entry: dict = {
+            "batch_size": size,
+            "arms": {name: arm(name) for name in arm_order},
+            "speedup_batch": arm("serial")["p50_ms"] / arm("batch")["p50_ms"],
+            "speedup_single": arm("serial")["p50_ms"] / arm("single")["p50_ms"],
+            "single_vs_batch": arm("batch")["p50_ms"] / arm("single")["p50_ms"],
+            "single_scenario_ms_p50": _statistics.median(single),
+            "token_groups": groups,
+            "suspensions_round4": campaign_batch.suspensions,
+            "comparison": comparison,
+            "round4_control": control,
+            "cross_arm_bitwise": cross,
+            "perturbations": perturbations,
+            "margins": margins,
+            "safety": bake_module.safety_factor(perturbations, margins),
+        }
+        if homogeneous:
+            stages_table = bake_module.stage_throughput(
+                pipeline, campaign_batch.drivers, repeats=max(repeats, 5))
+            # ``stage_throughput`` reports the four forwards *and* a derived
+            # ``root`` row that is ``probe + plan``.  Round 4 summed every row, so
+            # it counted the duration probe twice; this round sums the four
+            # forwards only and reports the round-4 basis beside it.
+            forwards = {name: row for name, row in stages_table.items() if name != "root"}
+            stage_sum = sum(row["per_scenario_ms"] for row in forwards.values()
+                            if row["batch"] == size)
+            stage_sum_with_root = sum(row["per_scenario_ms"] for row in stages_table.values()
+                                      if row["batch"] == size)
+            host5 = bake_module.host_pass_timing_single_pass(
+                pipeline, bundle, scenarios, stages, campaign_single.rows,
+                repeats=repeats)
+            host4 = bake_module.host_pass_timing(
+                pipeline, bundle, scenarios, campaign_batch.drivers, repeats=repeats)
+            measured5 = entry["arms"]["single"]["ms_per_scenario"]
+            measured4 = entry["arms"]["batch"]["ms_per_scenario"]
+            entry["stage_throughput"] = stages_table
+            entry["residual"] = {
+                "batched_stage_sum_ms": stage_sum,
+                "batched_stage_sum_with_derived_root_ms": stage_sum_with_root,
+                "host_pass_ms_per_scenario": host5["per_scenario_ms_p50"],
+                "round4_host_pass_ms_per_scenario": host4["per_scenario_ms_p50"],
+                "single_pass_ms_per_scenario": stage_sum + host5["per_scenario_ms_p50"],
+                "measured_ms_per_scenario": measured5,
+                "orchestration_overhead_ms_per_scenario": (
+                    measured5 - stage_sum - host5["per_scenario_ms_p50"]),
+                "round4_measured_ms_per_scenario": measured4,
+                "round4_driver_overhead_ms_per_scenario": (
+                    measured4 - stage_sum - host4["per_scenario_ms_p50"]),
+                "host_pass_totals_ms": host5["totals_ms"],
+            }
+        entry["manifest"] = bake_module.manifest_fields(
+            batch_size=size, stages=stages,
+            grouping="duration-homogeneous" if homogeneous else "duration-mixed",
+            token_groups=groups, comparison=comparison, safety=entry["safety"])
+        report["batches"][str(size)] = entry
+
+        serial, batch, single_arm = arm("serial"), arm("batch"), arm("single")
+        print(f"B={size:<3d} serial p50 {serial['p50_ms']:8.2f} ms   "
+              f"round4 p50 {batch['p50_ms']:8.2f} ms ({entry['speedup_batch']:.3f}x)   "
+              f"single p50 {single_arm['p50_ms']:8.2f} ms "
+              f"({entry['speedup_single']:.3f}x)   "
+              f"single/round4 {entry['single_vs_batch']:.3f}x")
+        print(f"       per scenario: serial {serial['ms_per_scenario']:6.2f} ms   "
+              f"round4 {batch['ms_per_scenario']:6.2f} ms   "
+              f"single {single_arm['ms_per_scenario']:6.2f} ms   "
+              f"throughput {single_arm['throughput_per_s']:6.2f}/s   "
+              f"groups {groups}")
+        print(f"       single pass vs B=1: tokens {comparison['token_identical']}/"
+              f"{comparison['scenarios']}, uniforms {comparison['uniform_identical']}, "
+              f"duration {comparison['selected_identical']}, "
+              f"{comparison['differing_tokens']}/{comparison['total_tokens']} differ; "
+              f"worst roots {comparison['worst_roots_m']:.3e} m, "
+              f"rotations {comparison['worst_rotations']:.3e}, "
+              f"angle {comparison['worst_angle_deg']:.4f} deg")
+        print(f"       single vs round4 bitwise: tokens {cross['tokens_identical']}/"
+              f"{cross['scenarios']}, uniforms {cross['uniforms_identical']}, "
+              f"duration {cross['selected_identical']}, roots {cross['roots_identical']}, "
+              f"rotations {cross['rotations_identical']}, "
+              f"bit_identical={cross['bit_identical']}")
+        safety = entry["safety"]
+        print(f"       safety pose {safety['pose_perturbation']:.3e}/"
+              f"{safety['pose_margin']:.3e} = "
+              f"{safety['pose_ratio'] if safety['pose_ratio'] is None else format(safety['pose_ratio'], '.4f')}x   "
+              f"duration {safety['duration_perturbation']:.3e}/"
+              f"{safety['duration_margin']:.3e} = "
+              f"{safety['duration_ratio'] if safety['duration_ratio'] is None else format(safety['duration_ratio'], '.4f')}x")
+        if "residual" in entry:
+            r = entry["residual"]
+            print(f"       per-scenario: batched stages {r['batched_stage_sum_ms']:5.2f} ms + "
+                  f"host pass {r['host_pass_ms_per_scenario']:5.2f} ms -> single-pass "
+                  f"{r['single_pass_ms_per_scenario']:5.2f} ms;  measured "
+                  f"{r['measured_ms_per_scenario']:5.2f} ms;  orchestration overhead "
+                  f"{r['orchestration_overhead_ms_per_scenario']:5.2f} ms")
+            print(f"       round-4 control: host pass "
+                  f"{r['round4_host_pass_ms_per_scenario']:5.2f} ms;  measured "
+                  f"{r['round4_measured_ms_per_scenario']:5.2f} ms;  driver re-execution "
+                  f"{r['round4_driver_overhead_ms_per_scenario']:5.2f} ms")
+        for stage, row in sorted(entry.get("stage_throughput", {}).items()):
+            print(f"       stage {stage:<8s} serial {row['serial_p50_ms']:7.3f} ms/plan   "
+                  f"batched {row['batched_p50_ms']:8.3f} ms   "
+                  f"per-scenario {row['per_scenario_ms']:6.3f} ms   "
+                  f"speedup {row['speedup']:5.2f}x")
+    bundle.release()
+    return report
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

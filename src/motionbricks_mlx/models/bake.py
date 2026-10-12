@@ -289,6 +289,14 @@ def compare(reference: list[Run], candidate: list[Run]) -> dict:
 
 STAGE_ORDER = ("probe", "plan", "pose", "decoder")
 
+#: Which of a driver's *stages* owns each of the four forward points.
+REQUEST_STAGE = {"probe": "root", "plan": "root", "pose": "pose", "decoder": "decoder"}
+
+
+def _owns_stage(stages, stage: str) -> bool:
+    """``probe``/``plan`` are the two halves of the ``root`` stage."""
+    return REQUEST_STAGE[stage] in stages
+
 
 class BakeSuspend(Exception):
     """Ends a ``run_transition`` call at a stage boundary (see :class:`StageDriver`)."""
@@ -380,9 +388,7 @@ def batched_stages() -> frozenset[str]:
 
 def _owns(driver: StageDriver, stage: str) -> bool:
     """``probe``/``plan`` are the two halves of the driver's ``root`` stage."""
-    if stage in ("probe", "plan"):
-        return "root" in driver.stages
-    return stage in driver.stages
+    return _owns_stage(driver.stages, stage)
 
 
 def _stack(values) -> mx.array:
@@ -447,6 +453,10 @@ class BatchResult:
     suspensions: int
     stage_sizes: dict[str, int]
     agents: list = field(default_factory=list)
+    # Round 5: the mx row each stage's batched forward produced, per scenario, so
+    # the single-pass arm's host pass can be re-timed with every row already
+    # resolved (``inject=``).  Empty for the round-4 driver.
+    rows: dict[str, list] = field(default_factory=dict)
 
 
 def drive_batch(pipeline, bundle, scenarios: list[Scenario],
@@ -728,3 +738,341 @@ def stage_throughput(pipeline, drivers: list[StageDriver], repeats: int = 5) -> 
             "repeats": repeats,
         }
     return table
+
+
+# ---------------------------------------------------------------------------
+# Round 5: the single-pass orchestrator
+# ---------------------------------------------------------------------------
+# Round 4's driver synchronises the batch at stage boundaries by *restarting*
+# ``run_transition`` once per boundary per scenario, so every host step before a
+# boundary is executed again and thrown away: measured 3.73 ms of a 9.92 ms
+# ``B = 16`` bake (report 33.3).  Round 5 makes the transition resumable --
+# ``MlxPipeline.transition_steps`` is a step generator whose locals survive the
+# four forward points -- and drives one generator per scenario in lockstep here.
+# Each host step then runs exactly once per scenario, each neural forward exactly
+# once per shape group, and nothing is restarted.
+#
+# ``drive_batch`` above is deliberately untouched: it is round 5's *control arm*,
+# and the two arms must agree bit for bit (``compare_bitwise``), otherwise the
+# throughput comparison against round 4 would be measuring two different bakes.
+
+
+def _request_key(stage: str, arguments) -> object:
+    """The shape key of one forward request: what makes two scenarios share a call.
+
+    The three keys are the ones :func:`_resolve` uses for the round-4 driver, read
+    off the request's own arguments instead of off a ``StageDriver``.
+    """
+    if stage == "probe":
+        return ("probe",)
+    if stage == "plan":
+        return int(arguments[6])                     # requested token count
+    if stage == "pose":
+        return (int(arguments[4]), int(arguments[5]))  # positions, num_tokens
+    return int(arguments[4])                         # decoder: positions
+
+
+def _batched_request(pipeline, stage: str, arguments: list, key) -> list:
+    """One batched forward for a shape-homogeneous group of step requests.
+
+    Byte for byte the calls :func:`_resolve` makes for the round-4 driver: same
+    stacking order, same shape key, same ``mx.eval`` and the same row slicing, so
+    the two arms consume identical rows.
+    """
+    if stage == "probe":
+        stacked = [_stack([argument[slot] for argument in arguments])
+                   for slot in range(6)]
+        out = pipeline.root.duration_logits_batch(*stacked)
+    elif stage == "plan":
+        # The request is ``(global, local, poses, global_mask, local_mask,
+        # pose_mask, tokens, dense_target, dense_target_mask)``; the token count is
+        # a trace-time constant and is the *shape key*, never a stacked input --
+        # the same eight arrays ``_resolve`` stacks, in the same order.
+        stacked = [_stack([argument[slot] for argument in arguments])
+                   for slot in (0, 1, 2, 3, 4, 5, 7, 8)]
+        out = pipeline.root.plan_values_batch(*stacked, key)
+    elif stage == "pose":
+        stacked = [_stack([argument[slot] for argument in arguments])
+                   for slot in range(4)]
+        out = pipeline.pose.plan_batch(*stacked, key[0], key[1])
+    else:
+        stacked = [_stack([argument[slot] for argument in arguments])
+                   for slot in range(4)]
+        out = pipeline.decoder.decode_batch(*stacked, key)
+    mx.eval(out)
+    return [out[row] for row in range(len(arguments))]
+
+
+class _SinglePassSession:
+    """One scenario's transition generator plus the agent state that finishes it."""
+
+    def __init__(self, pipeline, bundle, scenario: Scenario, stages: frozenset,
+                 capture_trace: bool) -> None:
+        self.scenario = scenario
+        self.command = scenario.command()
+        self.stages = stages
+        self.agent = _new_agent(pipeline, bundle)
+        self.agent.reset(scenario.style)
+        # Exactly what ``Agent.plan`` builds, kept so the scenario can be finished
+        # by ``Agent.finish_plan`` with the boundary set this pass actually used.
+        self.frame, self.constraints = self.agent.constraints_for(
+            self.command, scenario.style)
+        self.steps = pipeline.transition_steps(
+            self.constraints, self.command.seed, self.command.sampling_argmax,
+            capture_trace)
+        self.request = next(self.steps)
+        self.rows: dict[str, object] = {}
+        self.result = None
+
+    def send(self, value) -> None:
+        """Feed one forward's output back; ``None`` request means finished."""
+        try:
+            self.request = self.steps.send(value)
+        except StopIteration as stop:
+            self.result = stop.value
+            self.request = None
+
+    def advance(self):
+        """Run every host step and every forward this orchestrator does not own.
+
+        Stops on the first request for a stage the orchestrator owns (or when the
+        transition is finished), which is the whole point: the steps that ran are
+        kept in the generator's frame, never re-executed.
+        """
+        while self.request is not None and not _owns_stage(self.stages, self.request[0]):
+            self.send(self.request[2]())               # the accepted forward
+        return self.request
+
+
+def _session_row(session: _SinglePassSession, stage: str) -> np.ndarray:
+    row = session.rows.get(stage)
+    return (np.zeros(0, np.float32) if row is None
+            else np.asarray(row, dtype=np.float32).reshape(-1).copy())
+
+
+def drive_batch_single_pass(pipeline, bundle, scenarios: list[Scenario],
+                            stages, capture_trace: bool = True,
+                            inject: dict[str, list] | None = None) -> BatchResult:
+    """Plan every scenario of one batch in **one pass** of the transition.
+
+    Each scenario owns one step generator (:meth:`MlxPipeline.transition_steps`)
+    and its own reset agent.  The orchestrator advances every generator to the
+    first forward it owns, resolves all of them for that stage in shape groups,
+    sends the rows back, and repeats until every generator returns -- so each host
+    step runs once per scenario and each forward once per group.
+
+    ``inject`` replaces the batched forwards with rows captured from an earlier
+    run (``BatchResult.rows``), which is how the host side of the pass is timed
+    without any neural work: the host steps still run, in the same order, and the
+    rows they would have consumed are handed straight back.
+
+    The returned :class:`BatchResult` carries the same :class:`Run` per scenario
+    as :func:`drive_batch`, so the campaign comparison code is shared; ``drivers``
+    is empty because this arm has no ``StageDriver`` and never suspends.
+    """
+    stages = frozenset(stages)
+    sessions = [_SinglePassSession(pipeline, bundle, scenario, stages, capture_trace)
+                for scenario in scenarios]
+    for session in sessions:
+        session.advance()
+
+    pending = [index for index, session in enumerate(sessions)
+               if session.request is not None]
+    rounds = 0
+    while pending:
+        rounds += 1
+        if rounds > 4 * len(scenarios) + 8:               # pragma: no cover - defensive
+            raise RuntimeError("single-pass orchestrator made no progress")
+        for stage in STAGE_ORDER:
+            waiting = [index for index in pending
+                       if sessions[index].request is not None
+                       and sessions[index].request[0] == stage]
+            if not waiting:
+                continue
+            grouped: dict[object, list[int]] = {}
+            for index in waiting:
+                grouped.setdefault(
+                    _request_key(stage, sessions[index].request[1]), []).append(index)
+            for key, indices in grouped.items():
+                arguments = [sessions[index].request[1] for index in indices]
+                if inject is None:
+                    rows = _batched_request(pipeline, stage, arguments, key)
+                else:
+                    rows = [inject[stage][index] for index in indices]
+                for row, index in zip(rows, indices):
+                    sessions[index].rows[stage] = row
+                    # The probe answers with ``(logits, boundary)`` on every path;
+                    # a batched probe has no boundary pair, exactly as the round-4
+                    # driver behaved (``MlxPipeline._stage_forward``).
+                    sessions[index].send((row, None) if stage == "probe" else row)
+                    sessions[index].advance()
+        pending = [index for index in pending if sessions[index].request is not None]
+
+    runs: list[Run] = []
+    for session in sessions:
+        motion, info = session.agent.finish_plan(session.result, session.frame,
+                                                 session.constraints, session.command)
+        trace = info.get("trace", {})
+        runs.append(Run(
+            session.scenario.label, int(info["selected_tokens"]),
+            np.asarray(trace.get("pose.tokens", np.zeros(0)), np.float32),
+            np.asarray(trace.get("pose.sampling_uniforms", np.zeros(0)), np.float32),
+            motion.roots.copy(), motion.rotations_xyzw.copy(),
+            _session_row(session, "probe"), _session_row(session, "plan"),
+            _session_row(session, "pose"), _session_row(session, "decoder")))
+    return BatchResult(
+        [scenario.label for scenario in scenarios], runs, [], 0,
+        {name: sum(1 for session in sessions if _owns_stage(session.stages, name))
+         for name in STAGE_ORDER},
+        [session.agent for session in sessions],
+        {name: [session.rows.get(name) for session in sessions]
+         for name in STAGE_ORDER})
+
+
+def host_pass_timing_single_pass(pipeline, bundle, scenarios: list[Scenario],
+                                 stages, rows: dict[str, list],
+                                 repeats: int = 5) -> dict:
+    """Time the single-pass orchestrator with every batched row already resolved.
+
+    That pass runs no neural forward at all, so it measures the **host** side of a
+    one-pass bake -- normalisation, the dense target, the predicted local root, the
+    conditioning, sampling, the codebook gather, the motion decode, the agent maths
+    and the orchestration itself -- which is the part batching cannot remove.  It
+    is the round-5 counterpart of :func:`host_pass_timing`, measured on the same
+    scenario set; the two differ only in that this one is interleaved by the
+    orchestrator instead of run one scenario at a time.
+    """
+    import statistics
+    import time
+
+    totals: list[float] = []
+    for _ in range(repeats):
+        started = time.perf_counter()
+        drive_batch_single_pass(pipeline, bundle, scenarios, stages,
+                                capture_trace=False, inject=rows)
+        totals.append((time.perf_counter() - started) * 1000.0)
+    total = statistics.median(totals)
+    return {
+        "repeats": repeats,
+        "total_ms_p50": total,
+        "per_scenario_ms_p50": total / len(scenarios),
+        "totals_ms": totals,
+    }
+
+
+def compare_bitwise(left: list[Run], right: list[Run]) -> dict:
+    """Exact equality of two bake arms over the same scenarios (round-5 check).
+
+    ``compare`` quantifies the deviation of a batched arm from the serial
+    reference.  This one is the *instrument* check: the two batch arms must
+    produce identical rows, so anything but exact equality -- ``np.array_equal``,
+    no tolerance -- means the single-pass orchestrator changed an execution order
+    that mattered and its throughput may not be compared with round 4's.
+    """
+    def equal(a, b) -> bool:
+        first, second = np.asarray(a), np.asarray(b)
+        return bool(first.shape == second.shape and np.array_equal(first, second))
+
+    rows = []
+    for a, b in zip(left, right):
+        rows.append({
+            "label": a.label,
+            "tokens": equal(a.tokens, b.tokens),
+            "uniforms": equal(a.uniforms, b.uniforms),
+            "selected": a.selected == b.selected,
+            "roots": equal(a.roots, b.roots),
+            "rotations": equal(a.rotations, b.rotations),
+            "differing_tokens": (int(np.count_nonzero(np.asarray(a.tokens)
+                                                      != np.asarray(b.tokens)))
+                                 if np.asarray(a.tokens).shape
+                                 == np.asarray(b.tokens).shape else -1),
+        })
+    return {
+        "scenarios": len(rows),
+        "tokens_identical": sum(row["tokens"] for row in rows),
+        "uniforms_identical": sum(row["uniforms"] for row in rows),
+        "selected_identical": sum(row["selected"] for row in rows),
+        "roots_identical": sum(row["roots"] for row in rows),
+        "rotations_identical": sum(row["rotations"] for row in rows),
+        "differing_tokens": sum(max(0, row["differing_tokens"]) for row in rows),
+        "bit_identical": all(row["tokens"] and row["uniforms"] and row["selected"]
+                             and row["roots"] and row["rotations"] for row in rows),
+        "rows": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
+# What a baked product's manifest must carry (decision 0007)
+# ---------------------------------------------------------------------------
+
+#: Decision ``0007`` requires these on the manifest of anything a bake produced.
+#: They are assembled here, from the campaign that was actually run, so the tier
+#: cannot be written by hand from a previous release.
+BAKE_MANIFEST_FIELDS = (
+    "batch_size",
+    "bake_tier",
+    "bake_stages",
+    "bake_stage_switches",
+    "bake_grouping",
+    "bake_campaign_scenarios",
+    "bake_token_decisions_differing",
+    "bake_worst_roots_m",
+    "bake_worst_rotations",
+    "bake_safety_ratio",
+    "bake_min_decision_margin",
+    "bake_action_bit_identical",
+)
+
+#: Decision ``0007``: a release bake needs at least this much headroom between
+#: the worst perturbation and the tightest discrete decision margin.
+RELEASE_MARGIN = 1.5
+
+
+def bake_tier(pose_ratio: float | None, campaign_ok: bool,
+              margin: float = RELEASE_MARGIN) -> str:
+    """``reproducible`` or ``draft`` for one ``B`` (decision 0007).
+
+    ``reproducible`` requires **both** halves of the rule: the campaign passed
+    (every scenario still matches the same scenario run alone on the discrete
+    outputs) **and** the safety ratio leaves ``margin``-times headroom, i.e.
+    ``1 / ratio >= margin``.  Passing the campaign alone is not enough -- that is
+    exactly the case round 4 found at ``B = 16``, where the campaign passed with
+    no margin left.
+    """
+    if campaign_ok and pose_ratio is not None and pose_ratio > 0.0:
+        return "reproducible" if (1.0 / pose_ratio) >= margin else "draft"
+    return "draft"
+
+
+def manifest_fields(*, batch_size: int, stages, grouping: str, token_groups: dict,
+                    comparison: dict, safety: dict) -> dict:
+    """The manifest block decision ``0007`` requires for one baked ``B``.
+
+    ``comparison`` is :func:`compare`'s result for this ``B`` (the campaign) and
+    ``safety`` is :func:`safety_factor`'s.  ``bake_action_bit_identical`` is
+    derived, never asserted: full-stage batching does not reproduce the final
+    action bit for bit, and the field is what lets a reviewer see that instead of
+    having to trust a tolerance.
+    """
+    stages = frozenset(stages)
+    campaign_ok = (comparison["token_identical"] == comparison["scenarios"]
+                   and comparison["uniform_identical"] == comparison["scenarios"]
+                   and comparison["selected_identical"] == comparison["scenarios"])
+    return {
+        "batch_size": int(batch_size),
+        "bake_tier": bake_tier(safety.get("pose_ratio"), campaign_ok),
+        "bake_stages": sorted(stages),
+        "bake_stage_switches": [name for name, stage in
+                                (("bake_root_batch", "root"),
+                                 ("bake_decoder_batch", "decoder"))
+                                if stage in stages],
+        "bake_grouping": {"mode": grouping, "token_groups": dict(token_groups)},
+        "bake_campaign_scenarios": comparison["scenarios"],
+        "bake_token_decisions_differing": comparison["differing_tokens"],
+        "bake_worst_roots_m": comparison["worst_roots_m"],
+        "bake_worst_rotations": comparison["worst_rotations"],
+        "bake_safety_ratio": safety.get("pose_ratio"),
+        "bake_min_decision_margin": safety.get("pose_margin"),
+        "bake_action_bit_identical": bool(comparison["worst_roots_m"] == 0.0
+                                          and comparison["worst_rotations"] == 0.0),
+    }
