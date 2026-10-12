@@ -6,10 +6,16 @@ post-processing the reference applies to the network's output.
 
 All maths here is NumPy float32 on small arrays, mirroring the reference's
 scalar C++ float loops one to one; the neural stages themselves stay in MLX.
+
+Round 2 (``docs/optimization-report.md`` section 12) batches the per-joint and
+per-frame loops that the reference writes as scalar loops.  The reference form
+stays in this file verbatim as ``_*_ref`` so both arms of the A/B can run in one
+process; ``MOTIONBRICKS_MLX_AGENT=0`` selects it.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -20,6 +26,91 @@ FPS = np.float32(30.0)
 TWO_PI = np.float32(2.0 * np.pi)
 JOINTS = 34
 IDENTITY = np.eye(3, dtype=np.float32)
+
+# ---------------------------------------------------------------------------
+# Host-math switch
+# ---------------------------------------------------------------------------
+# Grammar identical to ``models.nn._option``: a bare token is the global switch,
+# ``name=1`` / ``name=0`` overrides one name and ``*=1`` / ``*=0`` overrides all,
+# applied in order.  The switch is read on every call so both arms can be
+# interleaved inside one process.
+#
+# Decision (report section 12.2): the batched form is default-on only if it is
+# token-identical, leaves ``mlx_align`` OK and improves the paired p50 by
+# >= 1.05x.  The measured verdict is recorded in section 13 of the report.
+_FALSY = frozenset(("", "0", "false", "no", "off"))
+AGENT_MATH_DEFAULT = True
+
+
+def _agent_math_option() -> bool:
+    """True when the batched host maths is selected for this process."""
+    raw = os.environ.get("MOTIONBRICKS_MLX_AGENT")
+    if raw is None:
+        return AGENT_MATH_DEFAULT
+    enabled = AGENT_MATH_DEFAULT
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        key, separator, value = item.partition("=")
+        key = key.strip().lower()
+        if separator:
+            if key in ("*", "all", "opt", "agent", "vector"):
+                enabled = value.strip().lower() not in _FALSY
+        else:
+            enabled = key not in _FALSY
+    return enabled
+
+
+def y_rotation_batch(angles: np.ndarray) -> np.ndarray:
+    """``y_rotation`` for an array of angles: ``(...,)`` -> ``(..., 3, 3)``.
+
+    Same expression as :func:`y_rotation`, evaluated on the whole array.
+    """
+    cosine = np.cos(np.asarray(angles, dtype=np.float32))
+    sine = np.sin(np.asarray(angles, dtype=np.float32))
+    out = np.zeros(cosine.shape + (3, 3), dtype=np.float32)
+    out[..., 0, 0] = cosine
+    out[..., 0, 2] = sine
+    out[..., 1, 1] = 1.0
+    out[..., 2, 0] = -sine
+    out[..., 2, 2] = cosine
+    return out
+
+
+def _tree_parent_gather(parents: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``(parent_index, root_joints)`` for the batched parent-relative product.
+
+    ``parent_index`` clamps the root's sentinel parent to joint 0 so the gather
+    is well defined; ``root_joints`` names the entries whose local transform *is*
+    the global one.
+    """
+    parents = np.asarray(parents, dtype=np.int32)
+    return np.maximum(parents, 0), np.flatnonzero(parents < 0)
+
+
+def rotate_rows(matrix: np.ndarray, vectors: np.ndarray) -> np.ndarray:
+    """``matrix @ v`` for every row of ``vectors``: ``(3, 3) x (N, 3) -> (N, 3)``.
+
+    An explicit contraction rather than ``matrix @ vectors.T`` because NumPy
+    routes the batched matrix-matrix product and the per-row matrix-vector
+    product to different BLAS kernels; on this machine that changes the last bit
+    of a 3x3 result (measured 1.192e-07).  ``einsum`` reproduces the per-row gemv
+    bit for bit, which is what keeps the batched path a drop-in for the loops.
+    """
+    return np.einsum("ij,kj->ki", matrix, vectors)
+
+
+def dot_rows(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """``np.dot(a, b)`` for every row pair: ``(..., D) x (..., D) -> (...,)``.
+
+    ``np.dot`` on two 1-D float32 arrays goes to BLAS ``sdot``; neither
+    ``np.sum(a * b, axis=-1)`` nor ``np.einsum`` reproduces its accumulation
+    (measured 4.768e-07 on random 4-vectors).  The batch is therefore expressed
+    as a batched matrix-vector product, which does match ``sdot`` bit for bit --
+    the same class of trap as :func:`rotate_rows`, one level down.
+    """
+    return (left[..., None, :] @ right[..., :, None])[..., 0, 0]
 
 
 def wrap(value: float) -> np.float32:
@@ -177,7 +268,7 @@ class EncodedFrames:
     poses: np.ndarray = field(default_factory=lambda: np.zeros((4, 303), np.float32))
 
 
-def encode_global_frames(joint_positions: np.ndarray, joint_rotations: np.ndarray,
+def _encode_global_frames_ref(joint_positions: np.ndarray, joint_rotations: np.ndarray,
                          repeat_last_velocity: bool) -> EncodedFrames:
     """``encode_global_frames`` (src/motion_rep.cpp:121-178)."""
     positions = np.ascontiguousarray(joint_positions, dtype=np.float32)
@@ -211,7 +302,7 @@ def encode_global_frames(joint_positions: np.ndarray, joint_rotations: np.ndarra
     return output
 
 
-def encode_context(root_xyz: np.ndarray, local_rotation_xyzw: np.ndarray,
+def _encode_context_ref(root_xyz: np.ndarray, local_rotation_xyzw: np.ndarray,
                    neutral_joints: np.ndarray, parents: np.ndarray) -> EncodedFrames:
     """``encode_context`` (src/motion_rep.cpp:180-250).
 
@@ -240,7 +331,7 @@ def encode_context(root_xyz: np.ndarray, local_rotation_xyzw: np.ndarray,
             rotations[frame, joint] = global_matrix
         for joint in (7, 14, 25, 33):
             rotations[frame, joint] = IDENTITY
-    return encode_global_frames(positions, rotations, False)
+    return _encode_global_frames_ref(positions, rotations, False)
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +375,7 @@ class WorldFrame:
     heading: np.float32
 
 
-def seed_agent_from_style(style: Style, parents: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _seed_agent_from_style_ref(style: Style, parents: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """``seed_agent_from_style`` (src/agent.cpp:381-417)."""
     roots = np.zeros((4, 3), dtype=np.float32)
     rotations = np.zeros((4, JOINTS, 4), dtype=np.float32)
@@ -299,7 +390,7 @@ def seed_agent_from_style(style: Style, parents: np.ndarray) -> tuple[np.ndarray
     return roots, rotations
 
 
-def canonicalize(root_xyz: np.ndarray, local_rotations_xyzw: np.ndarray,
+def _canonicalize_ref(root_xyz: np.ndarray, local_rotations_xyzw: np.ndarray,
                  command: Command) -> tuple[WorldFrame, np.ndarray, np.ndarray, Command]:
     """``canonicalize`` (src/agent.cpp:147-181)."""
     first = root_xyz.shape[0] - 4
@@ -343,14 +434,14 @@ def canonicalize(root_xyz: np.ndarray, local_rotations_xyzw: np.ndarray,
     return frame, canonical_roots, canonical_rotations, canonical_command
 
 
-def build_constraints(roots: np.ndarray, rotations: np.ndarray, command: Command,
+def _build_constraints_ref(roots: np.ndarray, rotations: np.ndarray, command: Command,
                       style: Style, neutral_joints: np.ndarray,
                       parents: np.ndarray) -> dict:
     """``build_constraints`` (src/agent.cpp:209-350).
 
     Returns a dict of raw constraint arrays consumed by ``TransitionConstraints``.
     """
-    context = encode_context(roots, rotations, neutral_joints, parents)
+    context = _encode_context_ref(roots, rotations, neutral_joints, parents)
     current_x, current_z = context.global_root[0, 0], context.global_root[0, 2]
     velocity_x = np.float32((context.global_root[1, 0] - current_x) * FPS)
     velocity_z = np.float32((context.global_root[1, 2] - current_z) * FPS)
@@ -481,7 +572,7 @@ def build_constraints(roots: np.ndarray, rotations: np.ndarray, command: Command
     return result
 
 
-def restore_world(motion: Motion, frame: WorldFrame) -> None:
+def _restore_world_ref(motion: Motion, frame: WorldFrame) -> None:
     """``restore_world`` (src/agent.cpp:183-207), in place."""
     first_matrix = quaternion_matrix(motion.rotations_xyzw[0, 0])
     first_heading = np.arctan2(first_matrix[0, 2], first_matrix[2, 2])
@@ -506,7 +597,7 @@ def restore_world(motion: Motion, frame: WorldFrame) -> None:
             target_correction @ quaternion_matrix(motion.target_local_rotations_xyzw[index, 0]))
 
 
-def apply_context_blend(roots: np.ndarray, rotations: np.ndarray, motion: Motion) -> None:
+def _apply_context_blend_ref(roots: np.ndarray, rotations: np.ndarray, motion: Motion) -> None:
     """``apply_context_blend`` (src/agent.cpp:354-379), in place."""
     weights = (np.float32(0.3), np.float32(0.433333337), np.float32(0.566666663),
                np.float32(0.7))
@@ -522,6 +613,434 @@ def apply_context_blend(roots: np.ndarray, rotations: np.ndarray, motion: Motion
                 continue
             motion.rotations_xyzw[frame, joint] = slerp(
                 rotations[begin + frame, joint], motion.rotations_xyzw[frame, joint], weight)
+
+
+# ---------------------------------------------------------------------------
+# Batched host maths (round 2, item 1: "fewer calls")
+# ---------------------------------------------------------------------------
+# Every function below is the ``_ref`` implementation with the per-joint /
+# per-frame Python loop replaced by one array expression over the same axis.
+# Nothing is re-associated: the reduction axis of each dot product is still the
+# same three (or four) elements in the same order, which is why these are
+# expected to be bit-identical and are measured against the token gate anyway.
+#
+# Call counts per planning step drop from ~172 ``matrix_xyzw`` + ~135
+# ``cont6d_matrix`` + ~175 ``quaternion_matrix`` calls to a handful, which is
+# the whole point: at 34-46 us per call on 3x3 arrays the cost was the call, not
+# the arithmetic (report section 3).
+
+
+def _encode_global_frames_fast(joint_positions: np.ndarray,
+                               joint_rotations: np.ndarray,
+                               repeat_last_velocity: bool) -> EncodedFrames:
+    """Batched :func:`_encode_global_frames_ref`."""
+    positions = np.ascontiguousarray(joint_positions, dtype=np.float32)
+    rotations = np.ascontiguousarray(joint_rotations, dtype=np.float32).reshape(4, JOINTS, 3, 3)
+    output = EncodedFrames()
+    headings = np.arctan2(rotations[:, 0, 0, 2], rotations[:, 0, 2, 2]).astype(np.float32)
+    root = positions[:, 0]
+    output.global_root[:, 0:3] = root
+    output.global_root[:, 3] = np.cos(headings)
+    output.global_root[:, 4] = np.sin(headings)
+    # x/z are root-relative, y stays absolute (src/motion_rep.cpp:151-153).
+    offsets = positions[:, 1:].copy()
+    offsets[:, :, 0] -= root[:, 0:1]
+    offsets[:, :, 2] -= root[:, 2:3]
+    output.poses[:, 0:99] = offsets.reshape(4, -1)
+    six = output.poses[:, 99:].reshape(4, JOINTS, 6)
+    matrix_cont6d(rotations, six)
+    output.poses[:, 99:] = six.reshape(4, -1)
+    output.local_root[0:3, 0] = wrap(headings[1:4] - headings[0:3]) * FPS
+    output.local_root[0:3, 1] = (output.global_root[1:4, 0]
+                                 - output.global_root[0:3, 0]) * FPS
+    output.local_root[0:3, 2] = (output.global_root[1:4, 2]
+                                 - output.global_root[0:3, 2]) * FPS
+    output.local_root[0:3, 3] = output.global_root[0:3, 1]
+    if repeat_last_velocity:
+        output.local_root[3] = output.local_root[2]
+        output.local_root[3, 3] = output.global_root[3, 1]
+    return output
+
+
+def _forward_kinematics_fast(root_xyz: np.ndarray, local_rotation_xyzw: np.ndarray,
+                             neutral_joints: np.ndarray,
+                             parents: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The four-frame FK tree of :func:`_encode_context_ref`, batched.
+
+    The parent chain is a genuine dependency, so the loop stays — but it runs 34
+    times over all four frames at once instead of 4 x 34 times over scalars.
+    """
+    frames = root_xyz.shape[0]
+    first = frames - 4
+    positions = np.zeros((4, JOINTS, 3), dtype=np.float32)
+    rotations = np.zeros((4, JOINTS, 3, 3), dtype=np.float32)
+    roots4 = np.ascontiguousarray(root_xyz[first:first + 4], dtype=np.float32)
+    locals_all = quaternion_matrix(
+        np.asarray(local_rotation_xyzw[first:first + 4], dtype=np.float32))
+    neutral = np.asarray(neutral_joints, dtype=np.float32)
+    rest = np.zeros((JOINTS, 3), dtype=np.float32)
+    for joint in range(JOINTS):
+        parent = int(parents[joint])
+        if parent >= 0:
+            rest[joint] = neutral[joint] - neutral[parent]
+    for joint in range(JOINTS):
+        parent = int(parents[joint])
+        if parent < 0:
+            rotations[:, joint] = locals_all[:, joint]
+            positions[:, joint] = roots4
+        else:
+            rotations[:, joint] = rotations[:, parent] @ locals_all[:, joint]
+            positions[:, joint] = positions[:, parent] + (
+                rotations[:, parent] @ rest[joint][None, :, None])[:, :, 0]
+    for joint in (7, 14, 25, 33):
+        rotations[:, joint] = IDENTITY
+    return positions, rotations
+
+
+def _encode_context_fast(root_xyz: np.ndarray, local_rotation_xyzw: np.ndarray,
+                         neutral_joints: np.ndarray, parents: np.ndarray) -> EncodedFrames:
+    """Batched :func:`_encode_context_ref`."""
+    positions, rotations = _forward_kinematics_fast(
+        root_xyz, local_rotation_xyzw, neutral_joints, parents)
+    return _encode_global_frames_fast(positions, rotations, False)
+
+
+def _local_rotations_fast(globals_all: np.ndarray, parents: np.ndarray) -> np.ndarray:
+    """``parent.T @ global`` per joint, batched on the leading axis.
+
+    ``globals_all`` is ``(..., JOINTS, 3, 3)``; the result is
+    ``matrix_xyzw`` of the parent-relative locals, so it is ``(..., JOINTS, 4)``.
+    """
+    parent_index, root_joints = _tree_parent_gather(parents)
+    parent_matrices = np.swapaxes(globals_all, -1, -2)[..., parent_index, :, :]
+    locals_all = parent_matrices @ globals_all
+    if root_joints.size:
+        locals_all[..., root_joints, :, :] = globals_all[..., root_joints, :, :]
+    return matrix_xyzw(locals_all)
+
+
+def _seed_agent_from_style_fast(style: Style,
+                                parents: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Batched :func:`_seed_agent_from_style_ref`."""
+    roots = np.ascontiguousarray(
+        style.global_root_positions[0:4] + style.global_joint_positions[0:4, 0],
+        dtype=np.float32)
+    rotations = _local_rotations_fast(
+        np.ascontiguousarray(style.global_joint_rotations[0:4], dtype=np.float32), parents)
+    return roots, rotations
+
+
+def _canonicalize_fast(root_xyz: np.ndarray, local_rotations_xyzw: np.ndarray,
+                       command: Command,
+                       ) -> tuple[WorldFrame, np.ndarray, np.ndarray, Command]:
+    """Batched :func:`_canonicalize_ref` (same scalar tail for the command)."""
+    first = root_xyz.shape[0] - 4
+    first_root = root_xyz[first]
+    root_matrix = quaternion_matrix(local_rotations_xyzw[first, 0])
+    frame = WorldFrame(np.float32(first_root[0]), np.float32(first_root[2]),
+                       np.float32(np.arctan2(root_matrix[0, 2], root_matrix[2, 2])))
+    inverse_heading = y_rotation(-frame.heading)
+
+    shifted = np.array(root_xyz, dtype=np.float32, copy=True)
+    shifted[:, 0] -= frame.x
+    shifted[:, 2] -= frame.z
+    canonical_roots = np.ascontiguousarray(
+        rotate_rows(inverse_heading, shifted), dtype=np.float32)
+    canonical_rotations = np.array(local_rotations_xyzw, dtype=np.float32, copy=True)
+    # Only the pelvis is rewritten: with parent-relative rotations a single root
+    # rotation is exactly a whole-body rotation in FK, and rotating the remaining
+    # joints as well would apply it twice (src/agent.cpp:165-168 has no inner
+    # joint loop, exactly like restore_world).
+    canonical_rotations[:, 0] = matrix_xyzw(inverse_heading @ quaternion_matrix(
+        np.asarray(local_rotations_xyzw[:, 0], dtype=np.float32)))
+
+    canonical_command = Command(
+        style=command.style,
+        movement=tuple(float(v) for v in inverse_heading @ np.array(command.movement, np.float32)),
+        facing=tuple(float(v) for v in inverse_heading @ np.array(command.facing, np.float32)),
+        target_speed=command.target_speed,
+        world_target=command.world_target,
+        world_target_heading=command.world_target_heading,
+        has_world_target=command.has_world_target,
+        skip_context_blend=command.skip_context_blend,
+        seed=command.seed,
+        sampling_argmax=command.sampling_argmax,
+    )
+    if command.has_world_target:
+        target = np.array([command.world_target[0] - frame.x, command.world_target[1],
+                           command.world_target[2] - frame.z], dtype=np.float32)
+        canonical_command.world_target = tuple(float(v) for v in inverse_heading @ target)
+        canonical_command.world_target_heading = command.world_target_heading - frame.heading
+    return frame, canonical_roots, canonical_rotations, canonical_command
+
+
+def _build_constraints_fast(roots: np.ndarray, rotations: np.ndarray, command: Command,
+                            style: Style, neutral_joints: np.ndarray,
+                            parents: np.ndarray) -> dict:
+    """Batched :func:`_build_constraints_ref`.
+
+    The scalar bookkeeping (velocity, travel, heading, the spring ramp) is
+    unchanged and still runs one scalar iteration per frame; only the two
+    per-joint blocks and the per-frame write-backs are batched.
+    """
+    context = _encode_context_fast(roots, rotations, neutral_joints, parents)
+    current_x, current_z = context.global_root[0, 0], context.global_root[0, 2]
+    velocity_x = np.float32((context.global_root[1, 0] - current_x) * FPS)
+    velocity_z = np.float32((context.global_root[1, 2] - current_z) * FPS)
+
+    direction_x, direction_z = np.float32(command.movement[0]), np.float32(command.movement[2])
+    if np.hypot(direction_x, direction_z) <= np.float32(1.0e-5):
+        direction_x = np.float32(command.facing[0] * 0.1)
+        direction_z = np.float32(command.facing[2] * 0.1)
+    travel = np.float32(command.target_speed * 2.0) if command.target_speed >= 0.0 \
+        else np.float32(style.speed * 2.0)
+    if command.target_speed < 0.0 and style.speed == 0.0:
+        travel = np.float32(np.hypot(velocity_x, velocity_z) / 2.0)
+    if travel <= np.float32(0.1):
+        travel = np.float32(0.0)
+    target_x = np.float32(command.world_target[0]) if command.has_world_target \
+        else np.float32(current_x + travel * direction_x)
+    target_z = np.float32(command.world_target[2]) if command.has_world_target \
+        else np.float32(current_z + travel * direction_z)
+
+    current_heading = np.arctan2(context.global_root[0, 4], context.global_root[0, 3])
+    next_heading = np.arctan2(context.global_root[1, 4], context.global_root[1, 3])
+    heading_velocity = np.float32(wrap(next_heading - current_heading) * FPS)
+    desired_heading = np.float32(command.world_target_heading) if command.has_world_target \
+        else np.arctan2(np.float32(command.facing[0]), np.float32(command.facing[2]))
+    desired_heading = np.float32(current_heading + wrap(desired_heading - current_heading))
+
+    start_root_x = np.empty(4, np.float32)
+    start_root_z = np.empty(4, np.float32)
+    start_heading = np.empty(4, np.float32)
+    target_root_x = np.empty(4, np.float32)
+    target_root_z = np.empty(4, np.float32)
+    target_heading = np.empty(4, np.float32)
+    for frame in range(4):
+        start_time = np.float32(frame / 30.0)
+        time = np.float32(1.0 + frame / 30.0)
+        start_root_x[frame] = spring(current_x, velocity_x, target_x, 0.8, start_time)
+        start_root_z[frame] = spring(current_z, velocity_z, target_z, 0.8, start_time)
+        start_heading[frame] = spring(current_heading, heading_velocity, desired_heading,
+                                      0.17, start_time)
+        target_root_x[frame] = spring(current_x, velocity_x, target_x, 0.8, time)
+        target_root_z[frame] = spring(current_z, velocity_z, target_z, 0.8, time)
+        target_heading[frame] = spring(current_heading, heading_velocity, desired_heading,
+                                       0.17, time)
+    if style.speed == 0.0 and command.target_speed < 0.0 and not command.has_world_target:
+        target_root_x[:] = target_root_x[0]
+        target_root_z[:] = target_root_z[0]
+
+    result = {
+        "global_root": np.zeros((8, 5), np.float32),
+        "local_root": np.zeros((8, 4), np.float32),
+        "poses": np.zeros((8, 303), np.float32),
+    }
+    rotation_offset = (JOINTS - 1) * 3
+    old_headings = np.arctan2(context.global_root[:, 4],
+                              context.global_root[:, 3]).astype(np.float32)
+    corrections = y_rotation_batch(start_heading - old_headings)
+    pose_positions = context.poses[:, 0:99].reshape(4, JOINTS - 1, 3)
+    context.poses[:, 0:99] = (corrections @ pose_positions.transpose(0, 2, 1)
+                              ).transpose(0, 2, 1).reshape(4, 99)
+    six = context.poses[:, rotation_offset:].reshape(4, JOINTS, 6)
+    matrix_cont6d(corrections[:, None] @ cont6d_matrix(six), six)
+    context.poses[:, rotation_offset:] = six.reshape(4, -1)
+    context.global_root[:, 0] = start_root_x
+    context.global_root[:, 2] = start_root_z
+    context.global_root[:, 3] = np.cos(start_heading)
+    context.global_root[:, 4] = np.sin(start_heading)
+    context.local_root[0:3, 0] = wrap(start_heading[1:4] - start_heading[0:3]) * FPS
+    context.local_root[0:3, 1] = (context.global_root[1:4, 0]
+                                  - context.global_root[0:3, 0]) * FPS
+    context.local_root[0:3, 2] = (context.global_root[1:4, 2]
+                                  - context.global_root[0:3, 2]) * FPS
+    context.local_root[0:3, 3] = context.global_root[0:3, 1]
+    # std::copy writes only the first four frames; the rest stay zero until the
+    # target block below fills frames 4..7 (src/agent.cpp:289-291).
+    result["global_root"][0:4] = context.global_root
+    result["local_root"][0:4] = context.local_root
+    result["poses"][0:4] = context.poses
+
+    first = 0 if style.frames == 4 else int(command.seed % (style.frames - 4))
+    source_frames = first + np.arange(4)
+    target_root_translations = np.zeros((4, 3), np.float32)
+    target_local_rotations = np.zeros((4, JOINTS, 4), np.float32)
+    corrections_t = y_rotation_batch(
+        wrap(target_heading - style.global_headings[source_frames]))
+    style_positions = np.ascontiguousarray(style.global_joint_positions[source_frames],
+                                           dtype=np.float32)
+    style_rotations = np.ascontiguousarray(style.global_joint_rotations[source_frames],
+                                           dtype=np.float32)
+    # The reference rotates each style joint position with a matrix-vector
+    # product (src/agent.cpp:311-313).  A contraction reproduces that kernel bit
+    # for bit; ``corrections_t @ style_positions[:, 1:].transpose(0, 2, 1)`` would
+    # be a gemm and differs in the last bit on 3-element reductions (measured
+    # 2.98e-08 on walk_stealth, which the pose planner then amplifies).
+    target_positions = np.einsum("fij,fkj->fki", corrections_t, style_positions[:, 1:])
+    global_root = result["global_root"][4:8]
+    global_root[:, 0] = target_root_x
+    global_root[:, 1] = (style.global_root_positions[source_frames, 1]
+                         + style.global_joint_positions[source_frames, 0, 1])
+    global_root[:, 2] = target_root_z
+    global_root[:, 3] = np.cos(target_heading)
+    global_root[:, 4] = np.sin(target_heading)
+    target_root_translations[:] = global_root[:, 0:3]
+    poses = result["poses"][4:8]
+    poses[:, 0:(JOINTS - 1) * 3] = target_positions.reshape(4, (JOINTS - 1) * 3)
+    target_globals = corrections_t[:, None] @ style_rotations
+    six = poses[:, rotation_offset:].reshape(4, JOINTS, 6)
+    matrix_cont6d(target_globals, six)
+    poses[:, rotation_offset:] = six.reshape(4, -1)
+    target_local_rotations[:] = _local_rotations_fast(target_globals, parents)
+    local_root = result["local_root"][4:8]
+    local_root[0:3, 0] = wrap(target_heading[1:4] - target_heading[0:3]) * FPS
+    local_root[0:3, 1] = (result["global_root"][5:8, 0]
+                          - result["global_root"][4:7, 0]) * FPS
+    local_root[0:3, 2] = (result["global_root"][5:8, 2]
+                          - result["global_root"][4:7, 2]) * FPS
+    local_root[0:3, 3] = result["global_root"][4:7, 1]
+    result["local_root"][7] = result["local_root"][6]
+    result["local_root"][7, 3] = result["global_root"][7, 1]
+
+    result["has_local_root"] = np.array([1, 1, 1, 0, 1, 1, 1, 1], np.uint8)
+    result["allowed_tokens"] = style.allowed_tokens.copy()
+    result["target_root_translations"] = target_root_translations
+    result["target_local_rotations_xyzw"] = target_local_rotations
+    return result
+
+
+def _restore_world_fast(motion: Motion, frame: WorldFrame) -> None:
+    """Batched :func:`_restore_world_ref`, in place."""
+    first_matrix = quaternion_matrix(motion.rotations_xyzw[0, 0])
+    first_heading = np.arctan2(first_matrix[0, 2], first_matrix[2, 2])
+    correction = y_rotation(frame.heading - first_heading)
+    shifted = np.array(motion.roots, dtype=np.float32, copy=True)
+    shifted[:, 0] -= motion.roots[0, 0]
+    shifted[:, 2] -= motion.roots[0, 2]
+    rotated = rotate_rows(correction, shifted)
+    motion.roots[:, 0] = rotated[:, 0] + frame.x
+    motion.roots[:, 1] = rotated[:, 1]
+    motion.roots[:, 2] = rotated[:, 2] + frame.z
+    # Only the pelvis is rewritten: the stored rotations are parent-relative, so
+    # rotating joint 0 rotates the whole body in FK and rotating the other joints
+    # as well would double-apply the correction.  This mirrors
+    # src/agent.cpp:194-196, which has no inner joint loop.
+    motion.rotations_xyzw[:, 0] = matrix_xyzw(
+        correction @ quaternion_matrix(motion.rotations_xyzw[:, 0]))
+    target_correction = y_rotation(frame.heading)
+    rotated_targets = rotate_rows(target_correction, motion.target_roots)
+    motion.target_roots[:, 0] = rotated_targets[:, 0] + frame.x
+    motion.target_roots[:, 1] = rotated_targets[:, 1]
+    motion.target_roots[:, 2] = rotated_targets[:, 2] + frame.z
+    motion.target_local_rotations_xyzw[:, 0] = matrix_xyzw(
+        target_correction @ quaternion_matrix(motion.target_local_rotations_xyzw[:, 0]))
+
+
+def _slerp_batch(source: np.ndarray, target: np.ndarray,
+                 amount: np.float32) -> np.ndarray:
+    """``slerp`` over ``(..., 4)`` quaternions, both branches evaluated.
+
+    ``slerp`` chooses between a lerp and a spherical interpolation from the
+    per-element ``dot``; the batch computes both and selects per element, so each
+    element takes exactly the branch it would have taken one at a time.
+    """
+    right = np.array(target, dtype=np.float32, copy=True)
+    dot = dot_rows(source, right)
+    negative = dot < 0.0
+    dot = np.where(negative, -dot, dot)
+    right = np.where(negative[..., None], -right, right)
+    dot = np.clip(dot.astype(np.float32), np.float32(-1.0), np.float32(1.0))
+    lerp = source + amount * (right - source)
+    # ``dot == 1`` makes the spherical branch 0/0; those elements take the lerp
+    # branch, so the NaN is discarded by the selection below -- the same reason
+    # ``matrix_xyzw`` runs under errstate.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        angle = np.arccos(dot)
+        denominator = np.sin(angle)
+        left_weight = np.sin((1.0 - amount) * angle) / denominator
+        right_weight = np.sin(amount * angle) / denominator
+        spherical = left_weight[..., None] * source + right_weight[..., None] * right
+    result = np.where((dot > 0.9995)[..., None], lerp, spherical).astype(np.float32)
+    return (result / np.sqrt(np.sum(result * result, axis=-1, keepdims=True))).astype(np.float32)
+
+
+def _apply_context_blend_fast(roots: np.ndarray, rotations: np.ndarray,
+                              motion: Motion) -> None:
+    """Batched :func:`_apply_context_blend_ref`, in place."""
+    weights = np.array([0.3, 0.433333337, 0.566666663, 0.7], dtype=np.float32)
+    begin = roots.shape[0] - 4
+    context_root = np.asarray(roots[begin:begin + 4], dtype=np.float32)
+    motion.roots[0:4] = (context_root * (np.float32(1.0) - weights)[:, None]
+                         + motion.roots[0:4] * weights[:, None]).astype(np.float32)
+    joints = np.array([joint for joint in range(1, JOINTS) if physical_g1_joint(joint)],
+                      dtype=np.intp)
+    source = np.ascontiguousarray(rotations[begin:begin + 4, joints], dtype=np.float32)
+    target = np.ascontiguousarray(motion.rotations_xyzw[0:4, joints], dtype=np.float32)
+    blended = np.empty_like(source)
+    for frame in range(4):
+        blended[frame] = _slerp_batch(source[frame], target[frame], weights[frame])
+    motion.rotations_xyzw[0:4, joints] = blended
+
+
+# --- public dispatchers ----------------------------------------------------
+# The names below are what the rest of the port (and the tests) calls; each one
+# selects the batched implementation or the verbatim reference one.
+
+def encode_global_frames(joint_positions: np.ndarray, joint_rotations: np.ndarray,
+                         repeat_last_velocity: bool) -> EncodedFrames:
+    """``encode_global_frames`` (src/motion_rep.cpp:121-178)."""
+    if _agent_math_option():
+        return _encode_global_frames_fast(joint_positions, joint_rotations,
+                                          repeat_last_velocity)
+    return _encode_global_frames_ref(joint_positions, joint_rotations, repeat_last_velocity)
+
+
+def encode_context(root_xyz: np.ndarray, local_rotation_xyzw: np.ndarray,
+                   neutral_joints: np.ndarray, parents: np.ndarray) -> EncodedFrames:
+    """``encode_context`` (src/motion_rep.cpp:180-250)."""
+    if _agent_math_option():
+        return _encode_context_fast(root_xyz, local_rotation_xyzw, neutral_joints, parents)
+    return _encode_context_ref(root_xyz, local_rotation_xyzw, neutral_joints, parents)
+
+
+def seed_agent_from_style(style: Style, parents: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``seed_agent_from_style`` (src/agent.cpp:381-417)."""
+    if _agent_math_option():
+        return _seed_agent_from_style_fast(style, parents)
+    return _seed_agent_from_style_ref(style, parents)
+
+
+def canonicalize(root_xyz: np.ndarray, local_rotations_xyzw: np.ndarray, command: Command,
+                 ) -> tuple[WorldFrame, np.ndarray, np.ndarray, Command]:
+    """``canonicalize`` (src/agent.cpp:147-181)."""
+    if _agent_math_option():
+        return _canonicalize_fast(root_xyz, local_rotations_xyzw, command)
+    return _canonicalize_ref(root_xyz, local_rotations_xyzw, command)
+
+
+def build_constraints(roots: np.ndarray, rotations: np.ndarray, command: Command,
+                      style: Style, neutral_joints: np.ndarray,
+                      parents: np.ndarray) -> dict:
+    """``build_constraints`` (src/agent.cpp:209-350)."""
+    if _agent_math_option():
+        return _build_constraints_fast(roots, rotations, command, style, neutral_joints,
+                                       parents)
+    return _build_constraints_ref(roots, rotations, command, style, neutral_joints, parents)
+
+
+def restore_world(motion: Motion, frame: WorldFrame) -> None:
+    """``restore_world`` (src/agent.cpp:183-207), in place."""
+    if _agent_math_option():
+        return _restore_world_fast(motion, frame)
+    return _restore_world_ref(motion, frame)
+
+
+def apply_context_blend(roots: np.ndarray, rotations: np.ndarray, motion: Motion) -> None:
+    """``apply_context_blend`` (src/agent.cpp:354-379), in place."""
+    if _agent_math_option():
+        return _apply_context_blend_fast(roots, rotations, motion)
+    return _apply_context_blend_ref(roots, rotations, motion)
 
 
 class Agent:
@@ -559,8 +1078,14 @@ class Agent:
             rotations[frame] = self.current_motion.rotations_xyzw[source]
         self.context_roots, self.context_rotations = roots, rotations
 
-    def plan(self, command: Command, style: Style) -> tuple[Motion, dict]:
-        """``plan_agent_impl`` (src/agent.cpp:419-455)."""
+    def plan(self, command: Command, style: Style,
+             capture_trace: bool = False) -> tuple[Motion, dict]:
+        """``plan_agent_impl`` (src/agent.cpp:419-455).
+
+        ``capture_trace`` forwards to :meth:`MlxPipeline.run_transition` so a
+        caller can diff the discrete ``pose.tokens``; it is off by default
+        because it copies every intermediate stage.
+        """
         if self.context_frames < 4:
             self.reset(style)
         assert self.context_roots is not None and self.context_rotations is not None
@@ -577,7 +1102,8 @@ class Agent:
                 "target_local_rotations_xyzw")},
                 has_global_root=np.ones(8, np.uint8),
                 has_poses=np.ones(8, np.uint8)),
-            seed=command.seed, sampling_argmax=command.sampling_argmax)
+            seed=command.seed, sampling_argmax=command.sampling_argmax,
+            capture_trace=capture_trace)
         motion = Motion(result.roots, result.rotations_xyzw,
                         constraints["target_root_translations"],
                         constraints["target_local_rotations_xyzw"])

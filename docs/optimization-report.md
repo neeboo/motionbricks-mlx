@@ -537,3 +537,252 @@ steps; p50/p90/max; same bundle, same seeds, same backend.
 3. **Only if host is still the bottleneck after 1 and 2**: a compiled kernel,
    `mx.fast.metal_kernel` first (one dispatch, no C-extension build/distribution
    cost).  No Cython / pybind11.
+
+---
+
+# Round 2 results — host-side maths
+
+Everything below was written after the measurements.  Section 12 was not edited.
+
+## 13. Item 0 — decision 0004 item 1: `MOTIONBRICKS_MLX_OPT` defaults on
+
+`models/nn.py` now declares the nine float32 switches in one table
+(`OPT_DEFAULTS`) and the call sites read it through `_opt(name)`, so a call site
+cannot drift from the decision.  `MOTIONBRICKS_MLX_OPT=0` restores the
+pre-optimization path, and because the grammar is applied in order the old
+"accepted path plus one switch" form still works: `=0,pose_compile=1`.
+
+Evidence on the GPU backend, all with no `MOTIONBRICKS_MLX_OPT` in the
+environment:
+
+| check | result |
+| --- | --- |
+| plan document vs the same document with `MOTIONBRICKS_MLX_OPT=0` | **byte-identical files** (`diff -q` clean) |
+| `mlx_align plan` between those two documents | `0.000e+00` on every array |
+| `mlx_align plan out/ref/plan-ref.json <default>` | `ALIGNMENT OK`, worst margin rotation angle **0.24x** tolerance |
+| `mlx_align trace out/ref/trace/transition-0.json --device gpu` | `TRACE OK`; `pose.tokens` `0.000e+00`, `pose.sampling_uniforms` `0.000e+00` |
+| the same trace on `--device cpu` | `TRACE OK` |
+| `mlx_plan.py --device gpu --repeat 2` / `--device cpu --repeat 2` | "deterministic over 2 runs with fixed seeds" |
+| `pytest` | **125 passed, 1 skipped** |
+
+The stored `out/plan-mlx.json` is a **CPU** document; a GPU document differs from
+it by 2.354e-06 m of roots.  That difference is the known backend difference and
+is **not** produced by this flip: a GPU document generated with
+`MOTIONBRICKS_MLX_OPT=0` differs from `out/plan-mlx.json` by exactly the same
+numbers.  The flip itself is a no-op on the numerics of either backend.
+
+## 14. Item 1 — batched host maths in `data/agent.py`: **adopted**
+
+Each `_ref` function keeps the reference's scalar loop verbatim; a batched twin
+replaces the per-joint / per-frame loop with one array expression over the same
+axis, and a dispatcher reads `MOTIONBRICKS_MLX_AGENT` (default **on**).
+
+### Host decomposition before/after (25 steps, same bundle/seed, GPU)
+
+| function | before: calls/step | before: ms/step | after: calls/step | after: ms/step |
+| --- | --- | --- | --- | --- |
+| `build_constraints` | 1 | **14.095** | 1 | **1.007** |
+| `restore_world` | 1 | **2.523** | 1 | **0.397** |
+| `apply_context_blend` | 1 | **0.681** | 1 | **0.176** |
+| `canonicalize` | 1 | **0.280** | 1 | **0.158** |
+| **host total (top level)** | | **17.58** | | **1.74** |
+| `_matrix_xyzw` | 180.6 | 7.560 | 4.0 | 0.345 |
+| `_cont6d_matrix` | 136.0 | 4.673 | 1.0 | 0.108 |
+| `quaternion_matrix` | 182.6 | 1.815 | 6.0 | 0.166 |
+| `matrix_cont6d` | 276.0 | 0.418 | 3.0 | 0.010 |
+| `slerp` | 116.0 | 0.584 | — (batched `_slerp_batch`) | ~0 |
+| `spring` | 24.0 | 0.112 | 24.0 | 0.131 |
+| `y_rotation` | 11.0 | 0.040 | 3.0 | 0.019 |
+| `wrap` | 15.0 | 0.040 | 6.0 | 0.022 |
+
+`_matrix_xyzw` is now called 4 times per step instead of 180.6, and
+`_cont6d_matrix` once instead of 136 -- i.e. the 34-46 us *per call* on 3x3
+arrays (section 3) has been paid 4 and 1 times instead of 181 and 136.
+
+### Paired A/B (interleaved in one process, both arms on the default MLX path)
+
+| run | load average | arm OFF p50 | arm ON p50 | paired p50 ratio | tokens |
+| --- | --- | --- | --- | --- | --- |
+| 25 steps | 11.6 -> 17.3 | 45.11 ms | 28.08 ms | **1.576x [1.410-1.685]**, mean 1.573x | **25/25 steps identical, 0/1832 tokens differ** |
+| 40 steps | 16.7 -> 17.3 | 44.53 ms | 30.85 ms | **1.556x [1.442-1.814]**, mean 1.587x | **40/40 steps identical, 0/2936 tokens differ** |
+
+`p90` 53.88 -> 37.79 ms and 54.60 -> 36.76 ms; `max` 57.53 -> 40.54 and
+61.64 -> 41.91 ms.
+
+### Decision
+
+Token-identical, alignment unchanged, paired p50 **1.56-1.58x** >= 1.05x ->
+**adopted by default** under the section 12.2 rule, which is decision 0004's rule
+and not a relaxation.  Reproduce with
+`scripts/mlx_bench.py --paired "MOTIONBRICKS_MLX_AGENT=0" "MOTIONBRICKS_MLX_AGENT=1" --paired-tokens`.
+
+## 15. Item 2 — moving the maths into the MLX graph: **rejected, measured**
+
+Section 12.4 fixed the order, so item 2 was evaluated after item 1 landed.  Three
+measurements decide it, and none of them is an argument from first principles:
+
+1. **The prize shrank to 6 %.**  After item 1 the whole host maths is 1.74 ms of
+   a ~29 ms step.  Item 2's ceiling is therefore ~1.06x, and only if GPU maths
+   were free.
+2. **The boundary item 2 would remove is free already.**  The six constraint
+   uploads (`mx.array` of 8x5, 8x4, 8x303 and three 8x1 masks, plus `mx.eval`)
+   cost **0.0059 ms p50**; an empty `mx.eval` sync costs 0.0003 ms.  The 4-6
+   device synchronisations per step are the host-side *decisions*
+   (duration selection, Gumbel sampling, codebook gather) and item 2 does not
+   remove them.
+3. **The MLX translation is more expensive than the host code it replaces.**
+   Measured on the real shapes, splitting graph build from `mx.eval` the way
+   section 3 did:
+
+   | block | MLX build | MLX eval | MLX total | host (item 1) |
+   | --- | --- | --- | --- | --- |
+   | FK tree, 34 dependent steps x 4 frames | 0.320 ms | 1.317 ms | **1.64 ms** | **0.371 ms** |
+   | target block (`corr @ rot` + cont6d) | 0.061 ms | 0.546 ms | **0.61 ms** | ~0.4 ms of `build_constraints` |
+
+   This is section 3's finding again: 34 *dependent* tiny kernels on batch 4 cost
+   1.3 ms of GPU execution, which is more than the CPU spends on the same 34
+   numpy calls.  Even depth-batching the tree (parents before children, ~8 levels
+   instead of 34) would land near the host time, not below it.
+
+There is also a correctness reason it could not have been a drop-in, measured
+directly:
+
+| operation | MLX vs NumPy | differing inputs | worst |
+| --- | --- | --- | --- |
+| `cos` | **not exact** | 1246/4096 (30 %) | 1.000 ULP |
+| `sin` | **not exact** | 1273/4096 (31 %) | 1.000 ULP |
+| `arctan2` | **not exact** | 1402/4096 (34 %) | 2.000 ULP |
+| `arccos` | **not exact** | 2164/4096 (53 %) | 2.000 ULP |
+| `sqrt` | exact | 0 | 0 |
+| `remainder` | exact | 0 | 0 |
+
+So the MLX form would have to re-earn token identity from scratch *and* be
+slower.  **Verdict: rejected.**  The scope if it is ever revisited is
+`batch-bake`/`offline`, where the throughput of a batched GPU graph (section 5)
+matters more than the 1.7 ms of host time.
+
+## 16. Item 3 — a compiled kernel: **not reached**
+
+Section 12.4 allows item 3 only if the host is still the bottleneck after items 1
+and 2.  After item 1 the host is 1.74 ms of a ~29 ms step (6 %), and item 2
+measured a net loss rather than a win, so no kernel was written.  If the host
+ever becomes the bottleneck again, `mx.fast.metal_kernel` remains the first
+choice (one dispatch, no C-extension build or distribution); the measurements in
+section 15 are the reason it is not needed for this shape.
+
+## 17. Correctness of round 2
+
+### 17.1 Bit-identity of the rewrite
+
+Not a tolerance -- equality, because the rewrite was built to be exact and the
+dispatcher only exists to A/B it:
+
+* every rewritten entry point (`seed_agent_from_style`, `canonicalize`,
+  `encode_context`, `build_constraints` on all 7 returned arrays, `restore_world`
+  on all 4, `apply_context_blend` on both) is bit-identical to its `_ref` twin on
+  **4 real styles x 9 seeds x 3 movement/facing shapes = 756 compared arrays, 0
+  differing**, plus synthetic styles and synthetic command shapes.
+* the same holds on the real agent context produced by a real plan.
+
+### 17.2 End-to-end campaign, 5 seeds x 6 steps (the section 12.1 gate)
+
+| backend | `pose.tokens` identical | tokens differing | `sampling_uniforms` identical | worst \|d roots\| | worst \|d rotations\| |
+| --- | --- | --- | --- | --- | --- |
+| GPU | **30/30 steps** | **0/2416** | 30/30 steps | **0.000e+00 m** (0.000x tol) | **0.000e+00** (0.000x tol) |
+| CPU | **30/30 steps** | **0/2416** | 30/30 steps | **0.000e+00 m** (0.000x tol) | **0.000e+00** (0.000x tol) |
+
+The float last-bit difference the criteria require to be reported is therefore
+**zero**: this rewrite changed no rounding at all on the data the port actually
+sees.  That is a stronger result than the rule needs, and it is why the change
+could be adopted at the 1.05x threshold rather than the 1.5x one.
+
+### 17.3 Two NumPy traps the rewrite had to avoid
+
+Both were found by measurement, not by reading; both are pinned by
+`tests/test_mlx_agent_math.py` so a later simplification fails the suite instead
+of silently reintroducing a last-bit perturbation that the pose planner amplifies
+by ~1e3-1e4.
+
+1. **gemv is not gemm.**  The reference rotates each style joint position with a
+   per-joint `matrix @ vector` (gemv).  Writing the batch as
+   `corrections @ positions.transpose(0, 2, 1)` is a gemm, and NumPy sends the two
+   to different BLAS kernels: 2.384e-07 on random 3x3 data, and **2.980e-08 on the
+   real `walk_stealth` constraints**, which was enough to change the decoded
+   motion of the second plan.  `np.einsum("fij,fkj->fki", ...)` reproduces the
+   gemv bit for bit.
+2. **`np.sum(a * b)` is not `np.dot(a, b)`.**  BLAS `sdot` accumulates
+   differently from an elementwise product followed by a sum: 4.768e-07 on random
+   4-vectors.  A batched matrix-vector product reproduces `sdot`; that is
+   `dot_rows`.
+
+A third defect was caught only by the end-to-end campaign, not by the unit-level
+differential: the batched target block had dropped the reference's `wrap()` on
+`target_heading - style.global_headings[source_frame]`.  `wrap` is a no-op on the
+*value* for angles already in `[-pi, pi]` but not in float32, and the omission was
+invisible until a style whose headings sit near the wrap boundary
+(`walk_stealth`).  It is the reason the gate is end-to-end tokens and not
+array-by-array equality of one step.
+
+## 18. Round-2 adoption table
+
+| item | change | before -> after (GPU p50) | gate | decision |
+| --- | --- | --- | --- | --- |
+| 0 | `MOTIONBRICKS_MLX_OPT` default flipped to on (decision 0004 item 1) | 47.0 -> 28-31 ms end-to-end including item 1; on its own the flip is a byte-identical no-op | correctness gate at its highest grade | **adopted** (per decision 0004) |
+| 1 | batched host maths in `data/agent.py` | host 17.58 -> **1.74 ms/step**; paired p50 **1.556-1.576x** | token-identical, alignment OK, >= 1.05x | **adopted, default on** |
+| 2 | move the host maths into the MLX graph | MLX translation measured **+1.0 ms/step** (1.64 vs 0.371 ms for the FK tree alone) | < 1.05x, and not bit-identical | **rejected** |
+| 3 | compiled kernel (`mx.fast.metal_kernel`) | not reached: host is 6 % of the step | section 12.4 precondition not met | **not attempted** |
+
+## 19. Where the remaining time is, and what is next
+
+The step is now ~94 % MLX stages.  Round 1's diagnosis is unchanged and is now
+the whole picture: the stages are 92-98 % execution of *dependent* small kernels
+on a batch of <= 16 rows, and 4-6 host device synchronisations per step remain
+because the algorithm makes host decisions between them (duration selection,
+Gumbel sampling, codebook gather).  Section 3 measured 13.9 ms of `mx.eval` in
+those kernels; the host no longer competes with that.
+
+Ranked next steps, all inside the existing grants:
+
+1. **Batch bake, not single-plan latency.**  Round 1 section 5 measured 2.37x /
+   3.12x / 6.05x throughput per scenario at B = 2 / 4 / 8 with the pose planner
+   only 7.1 -> 14.7 ms for the whole batch.  With the host now 1.74 ms, a batched
+   path would amortise it too.  It needs its own token campaign (B >= 4 was not
+   bitwise in round 1).
+2. **Reduce the synchronisation count.**  When `allowed_tokens` selects exactly
+   one duration the duration probe is already skipped; the same could apply to
+   the second sync when the root stage's output is only consumed after the
+   head offset is known.  Each removed sync is worth the kernel-drain latency,
+   not just its own cost.
+3. **Re-measure on an idle machine.**  Every number here is from a shared desktop
+   at load 9.8-17.4; the paired form is what makes the effects separable, but the
+   absolute p50 is still inflated by roughly 10 %.
+
+## 20. Reproduction (round 2)
+
+```
+# the default path (both round-2 changes on) and the pre-round-2 path
+./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/plan-default.json
+MOTIONBRICKS_MLX_OPT=0 MOTIONBRICKS_MLX_AGENT=0 \
+  ./.venv/bin/python scripts/mlx_plan.py --device cpu --out /tmp/plan-pre-round2.json
+# -> byte-identical to out/plan-mlx.json, sha256 262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a
+
+# interleaved paired A/B for the host maths
+./.venv/bin/python scripts/mlx_bench.py --paired \
+  "MOTIONBRICKS_MLX_AGENT=0" "MOTIONBRICKS_MLX_AGENT=1" --devices gpu \
+  --steps 25 --paired-tokens
+
+# the switch, its bit-identity over real styles, and the 5x6 token campaign
+./.venv/bin/python -m pytest tests/test_mlx_agent_math.py -q
+
+./.venv/bin/python scripts/mlx_align.py plan out/ref/plan-ref.json /tmp/plan-default.json
+./.venv/bin/python scripts/mlx_align.py trace out/ref/trace/transition-0.json --device gpu
+```
+
+Note for whoever reads the artifacts next: `out/` is gitignored.  While
+regenerating documents during round 2 this workstream ran
+`mlx_plan.py --device gpu --repeat 2` **without `--out`**, which overwrote
+`out/plan-mlx.json` with a GPU document.  It was restored byte-for-byte
+(sha256 `262e77d4…`, the value of the four identical accepted-path documents
+`out/plan-default-cpu.json`, `out/plan-opt-base-cpu.json`,
+`out/plan-final-default.json`, `out/plan-mlx-rep.json`) and the restoration was
+verified by replaying the pre-round-2 path against it.  Always pass `--out`.

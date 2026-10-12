@@ -110,3 +110,83 @@ DSH renderer、Chrome、Lark、Codex；训练侧当时没在跑）。因此所�
   量化**继续关闭**（q8/q4 会把动作改掉，有 token 级证据），并**授权**我做 `data/agent.py` 的 host NumPy 向量化。
 - 下一页工作：① 把 `MOTIONBRICKS_MLX_OPT` 默认值翻成开（改一行 + 重跑 `pytest`/`mlx_align` 验证）；
   ② `data/agent.py` 向量化（目标 1.2–1.4×，验收=逐位一致）；③ 等 GLM 的动作质量门建立后再讨论离线烘焙用不用 q8。
+
+## 2026-10-12 · 第二轮：宿主数学（decision 0004 授权的那一页）
+
+**① 默认值翻转（decision 0004 第 1 条）— 已完成。** `models/nn.py` 现在把九个 f32 开关写在一张表
+`OPT_DEFAULTS` 里，调用点统一走 `_opt(name)`，所以调用点不会与裁定漂移。`MOTIONBRICKS_MLX_OPT=0`
+回到优化前的路径；语法按顺序生效，所以旧的"已验收路径 + 单个开关"写法仍然可用（`=0,pose_compile=1`）。
+
+| 检查（GPU，环境里没有 `MOTIONBRICKS_MLX_OPT`） | 结果 |
+|---|---|
+| 默认路径 plan 文档 vs `MOTIONBRICKS_MLX_OPT=0` 文档 | **文件逐字节相同** |
+| 两者之间 `mlx_align plan` | 每个数组 `0.000e+00` |
+| `mlx_align plan out/ref/plan-ref.json <默认>` | `ALIGNMENT OK`，最差余量 rotation angle **0.24×** 容差 |
+| `mlx_align trace … --device gpu` / `--device cpu` | 双双 `TRACE OK`，`pose.tokens` 与 `sampling_uniforms` `0.000e+00` |
+| `mlx_plan.py --repeat 2`（gpu/cpu） | 两种后端都 deterministic |
+| `pytest` | **125 passed, 1 skipped** |
+
+`out/plan-mlx.json` 是 **CPU** 文档，GPU 文档与它差 2.354e-06 m——那是已知的后端差，**不是**这次翻转
+造成的：`MOTIONBRICKS_MLX_OPT=0` 的 GPU 文档与它的差**完全相同**。翻转本身在两种后端上都是数值空操作。
+
+**② 宿主数学批量化（第 1 项）— 采用，默认开启。** 每个 `_ref` 原样保留标量循环，新增批量化孪生体，
+调度器读 `MOTIONBRICKS_MLX_AGENT`（默认开）。
+
+| 函数 | 前：调用/步 | 前：ms/步 | 后：调用/步 | 后：ms/步 |
+|---|---|---|---|---|
+| `build_constraints` | 1 | **14.095** | 1 | **1.007** |
+| `restore_world` | 1 | **2.523** | 1 | **0.397** |
+| `apply_context_blend` | 1 | **0.681** | 1 | **0.176** |
+| `canonicalize` | 1 | **0.280** | 1 | **0.158** |
+| **宿主合计** | | **17.58** | | **1.74** |
+| `_matrix_xyzw` | 180.6 | 7.560 | 4.0 | 0.345 |
+| `_cont6d_matrix` | 136.0 | 4.673 | 1.0 | 0.108 |
+| `quaternion_matrix` | 182.6 | 1.815 | 6.0 | 0.166 |
+
+配对测量（同进程内交替，默认路径）：25 步 → **1.576× [1.410-1.685]**（45.11→28.08 ms，load 11.6→17.3）；
+40 步 → **1.556× [1.442-1.814]**（44.53→30.85 ms，load 16.7→17.3）。两次都 **0 个 token 不同**
+（25/25、40/40 步）。
+
+**③ 搬进 MLX 图（第 2 项）— 有据否决。** 三条测量，都不是"讲道理"：
+① 第 1 项之后宿主只剩 1.74 ms/29 ms（6 %），天花板约 1.06×；② 第 2 项想省掉的约束上传实测
+**0.0059 ms p50**，而每步 4–6 次的 device sync 是宿主**决策**（时长选择、Gumbel 采样、码本查表），
+第 2 项消不掉；③ MLX 版本的代价更高：FK 链（34 级依赖 × 4 帧）build 0.320 + eval 1.317 = **1.64 ms**，
+而宿主只要 **0.371 ms**；目标块 0.061 + 0.546 = 0.61 ms。另外逐位一致本来就不可能：MLX 的 `cos`/`sin`
+在 30 %/31 % 的输入上与 NumPy 差 1 ULP，`arctan2` 34 % 差到 2 ULP，`arccos` 53 % 差到 2 ULP
+（`sqrt`/`remainder` 精确）。**结论：净亏，默认关闭；若将来重做，适用范围是 batch-bake/离线。**
+
+**④ 编译内核（第 3 项）— 未触发。** 冻结顺序规定"只有 1、2 之后宿主仍是瓶颈"才做；宿主现在占 6 %，
+第 2 项又是净亏，所以没写内核。真到那步首选 `mx.fast.metal_kernel`（一次派发、无 C 扩展负担），
+不引入 Cython/pybind11。
+
+**⑤ 正确性报告（判据要的数字）。** 端到端 5 组 seed × 6 步：GPU 与 CPU 都是
+**30/30 步 `pose.tokens` 一致、0/2416 token 不同**、`sampling_uniforms` 30/30 一致，
+**roots/rotations 最大绝对差 0.000e+00（0.000× 容差）**——这次重写在实际数据上**没有任何舍入变化**，
+比判据要求的更强。逐项比对：4 个真实 style × 9 seed × 3 种命令形状 = **756 个数组全逐位一致**。
+plan 文档：默认路径与优化前默认路径**逐字节相同**；优化前路径重放 `out/plan-mlx.json`
+（sha256 `262e77d4…`）**逐字节相同**。
+
+**⑥ 两个 NumPy 陷阱（靠测量发现，已用测试钉住）**：
+① **gemv ≠ gemm**——参考用逐关节 `matrix @ vector`，写成 `@ vectors.T` 会走不同 BLAS 内核，
+随机 3×3 差 2.384e-07、**真实 `walk_stealth` 约束差 2.980e-08**，足以改变第二步的动作；
+`einsum('fij,fkj->fki')` 才能逐位复现 gemv。
+② **`np.sum(a*b)` ≠ `np.dot(a,b)`**——BLAS `sdot` 的累加不同，随机 4 维向量差 4.768e-07；
+批量矩阵-向量积能逐位复现（`dot_rows`）。
+第三个缺陷只有端到端 campaign 抓到、单步逐项比对抓不到：批量化时漏了参考对
+`target_heading - style.global_headings[...]` 的 `wrap()`；`wrap` 对已在 `[-pi,pi]` 的**值**是恒等，
+但在 float32 里不是，只有 `walk_stealth` 这种朝向靠近边界的 style 才暴露。这就是门禁必须是
+"端到端 token"而不是"单步数组相等"的原因。
+
+**⑦ 测量环境**：机器仍不空闲，load average **9.8–17.4**（桌面进程，本次运行期间没有训练/评测进程）。
+所有前后对比都是同进程交替配对；绝对 p50 仍被抬高约 10 %。
+
+**⑧ 一次事故与恢复（记在案）**：重新生成文档时我跑了一次
+`mlx_plan.py --device gpu --repeat 2`（**没给 `--out`**），把 gitignored 的 `out/plan-mlx.json`
+覆盖成了 GPU 文档。已从四份完全相同的已验收路径文档恢复，sha256 `262e77d4…`，
+并用"优化前路径重放"验证过。以后一律显式传 `--out`。
+
+**红线遵守**：只改 `data/**`、`models/{nn,root,pose,decoder,transition,bundle,sampling}.py`、
+`scripts/mlx_bench.py`（新增 `--paired`，默认行为不变）、`tests/test_mlx_*.py`、
+`docs/optimization-report.md`、本文件；`training/**`、`train_*.py`、`eval/**`、`eval_*.py`、
+`motion-representation.md`、`README.md`、`NOTICE`、`LICENSE`、`pyproject.toml` 未动；
+`mlx_plan.py`/`mlx_align.py` 语义未改；参考仓库只读；无 push。
