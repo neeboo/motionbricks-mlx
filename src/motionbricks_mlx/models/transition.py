@@ -27,6 +27,8 @@ from .schema import (BOUNDARY_FRAMES, EXTERNAL_POSE_WIDTH, FPS, GLOBAL_ROOT_WIDT
                      INTERNAL_POSE_WIDTH, JOINT_COUNT, LOCAL_ROOT_WIDTH, STATS_EPSILON)
 
 TWO_PI = np.float32(2.0 * np.pi)
+PI = np.float32(np.pi)
+FPS_F32 = np.float32(FPS)
 
 
 def wrap_angle(value: float) -> np.float32:
@@ -86,6 +88,11 @@ class MlxPipeline:
         # bit-identical to the per-element loops they replace.
         self._scale_all = np.array([self._scale(index) for index in range(self.std_np.size)],
                                    dtype=np.float32)
+        # Device-side copies of the two statistics vectors, so a stage can stay
+        # on the device without an upload per call (round-3 switch
+        # ``pred_local_defer``).
+        self._mean_device = mx.array(self.mean_np)
+        self._scale_device = mx.array(self._scale_all)
         self.parents = bundle.joint_parents.astype(np.int32)
         self.codebook = bundle.vq_codebook
         self.codebook_np = np.asarray(bundle.vq_codebook, dtype=np.float32)
@@ -101,11 +108,54 @@ class MlxPipeline:
     def unnormalize(self, value: float, index: int) -> np.float32:
         return np.float32(np.float32(value) * self._scale(index) + self.mean_np[index])
 
+    def _predicted_local_device(self, predicted_global: mx.array, frames: int,
+                                last_row: mx.array | None) -> mx.array:
+        """``src/planner.cpp:117-145`` as one device-side expression.
+
+        Same arithmetic as the host block it replaces -- float32 elementwise ops,
+        the same ``velocity_from``/``velocity_to`` index arrays, the same
+        statistics vectors -- so the only op that can differ is MLX's
+        ``arctan2``, which is **not** bit-identical to NumPy's (measured
+        2.384e-07, one ulp, on both backends).  ``mx.remainder`` is exact against
+        NumPy on this range.  The switch is therefore measured against the token
+        gate rather than assumed safe.
+        """
+        global_scale = self._scale_device[0:GLOBAL_ROOT_WIDTH]
+        global_mean = self._mean_device[0:GLOBAL_ROOT_WIDTH]
+        unnormalized = predicted_global * global_scale + global_mean
+        heading = mx.arctan2(unnormalized[:, 4], unnormalized[:, 3])
+        # ``velocity_from[-1] = frames - 2`` / ``velocity_to[-1] = frames - 1``:
+        # the last frame reuses the previous pair (src/planner.cpp:126-130).
+        source = mx.array(np.concatenate([np.arange(frames - 1, dtype=np.int32),
+                                          np.array([frames - 2], np.int32)]))
+        target = mx.array(np.concatenate([np.arange(1, frames, dtype=np.int32),
+                                          np.array([frames - 1], np.int32)]))
+        delta_heading = heading[target] - heading[source]
+        raw = mx.stack([
+            (mx.remainder(delta_heading + PI, TWO_PI) - PI) * FPS_F32,
+            (unnormalized[target, 0] - unnormalized[source, 0]) * FPS_F32,
+            (unnormalized[target, 2] - unnormalized[source, 2]) * FPS_F32,
+            unnormalized[:, 1],
+        ], axis=1)
+        predicted = (raw - self._mean_device[5:9]) / self._scale_device[5:9]
+        if last_row is not None:
+            predicted = mx.concatenate([predicted[0:frames - 1], last_row[None, :]], axis=0)
+        return predicted
+
     # -- transition ------------------------------------------------------
 
     def run_transition(self, constraints: TransitionConstraints, seed: int,
                        sampling_argmax: bool = False,
-                       capture_trace: bool = False) -> TransitionResult:
+                       capture_trace: bool = False,
+                       pose_logits: mx.array | None = None) -> TransitionResult:
+        """Run one transition.
+
+        ``pose_logits`` is the round-3 *bake seam*: when a caller supplies the pose
+        planner's output it is used as-is and the stage is skipped, so a batch
+        bake can substitute a batched forward while every other stage -- sampling,
+        the codebook gather, the decoder, the motion decode -- runs the accepted
+        code.  ``None`` (the default) is the accepted path, byte for byte.
+        """
         trace: dict[str, np.ndarray] = {}
         fast = nn._opt("transition_fast")
         initial_x = float(constraints.global_root[0, 0])
@@ -166,13 +216,24 @@ class MlxPipeline:
         enabled = int(np.count_nonzero(allowed))
         duration_logits = np.zeros(1, dtype=np.float32)
         mx_duration_logits = None
+        # Round-3 switch ``root_boundary_reuse``: keep the probe's boundary
+        # embedding and hand it back to ``RootPlanner.plan`` so it is computed
+        # once per step instead of twice (report section 24).
+        reuse_boundary = fast and nn._opt("root_boundary_reuse")
+        boundary = None
         if enabled == 1:
             tokens = 6 + int(np.flatnonzero(allowed)[0])
         elif enabled > 1:
-            mx_duration_logits = self.root.duration_logits(
-                mx.array(normalized_global), mx.array(normalized_local),
-                mx.array(normalized_poses), mx.array(global_mask),
-                mx.array(local_mask), mx.array(pose_mask))
+            if reuse_boundary:
+                mx_duration_logits, boundary = self.root.probe(
+                    mx.array(normalized_global), mx.array(normalized_local),
+                    mx.array(normalized_poses), mx.array(global_mask),
+                    mx.array(local_mask), mx.array(pose_mask))
+            else:
+                mx_duration_logits = self.root.duration_logits(
+                    mx.array(normalized_global), mx.array(normalized_local),
+                    mx.array(normalized_poses), mx.array(global_mask),
+                    mx.array(local_mask), mx.array(pose_mask))
             duration_logits = np.asarray(mx_duration_logits)
             best = -np.inf
             tokens = 0
@@ -207,17 +268,31 @@ class MlxPipeline:
             mx.array(normalized_global), mx.array(normalized_local), mx.array(normalized_poses),
             mx.array(global_mask), mx.array(local_mask), mx.array(pose_mask),
             tokens, mx.array(dense_target), mx.array(dense_target_mask),
-            duration_logits=mx_duration_logits)
-        predicted_global_np = np.asarray(predicted_global, dtype=np.float32).reshape(
-            frames, GLOBAL_ROOT_WIDTH)
+            duration_logits=mx_duration_logits, boundary=boundary)
+        # Round-3 switch ``pred_local_defer``: keep the predicted-local-root block
+        # on the device, so the root planner's output is not read back to the host
+        # and the synchronisation that used to happen here disappears into the
+        # pose planner's own drain.  ``predicted_global_np`` is therefore built
+        # only when something actually needs host values (the reference path, or a
+        # captured trace).
+        defer_local = fast and nn._opt("pred_local_defer")
+        need_global_np = capture_trace or not defer_local
+        predicted_global_np = (np.asarray(predicted_global, dtype=np.float32).reshape(
+            frames, GLOBAL_ROOT_WIDTH) if need_global_np else None)
         if capture_trace:
             trace["root.num_token_logits"] = np.asarray(duration_logits, dtype=np.float32).copy()
             trace["root.pred_global_root_values"] = predicted_global_np.reshape(-1).copy()
 
         # --- predicted local root (src/planner.cpp:117-145) --------------
+        predicted_local_device: mx.array | None = None
         unnormalized_global = np.empty((frames, GLOBAL_ROOT_WIDTH), dtype=np.float32)
         predicted_local = np.empty((frames, LOCAL_ROOT_WIDTH), dtype=np.float32)
-        if fast:
+        if defer_local:
+            last_row = (mx.array(normalized_local[7]) if constraints.has_local_root[7]
+                        else None)
+            predicted_local_device = self._predicted_local_device(
+                predicted_global, frames, last_row)
+        elif fast:
             unnormalized_global[:] = predicted_global_np * self._scale_all[0:GLOBAL_ROOT_WIDTH] \
                 + self.mean_np[0:GLOBAL_ROOT_WIDTH]
             heading = np.arctan2(unnormalized_global[:, 4],
@@ -257,9 +332,9 @@ class MlxPipeline:
                 ], dtype=np.float32)
                 for feature in range(LOCAL_ROOT_WIDTH):
                     predicted_local[frame, feature] = self.normalize(raw_values[feature], 5 + feature)
-        if constraints.has_local_root[7]:
+        if not defer_local and constraints.has_local_root[7]:
             predicted_local[frames - 1] = normalized_local[7]
-        if capture_trace:
+        if capture_trace and not defer_local:
             trace["root.pred_local_root_values"] = predicted_local.reshape(-1).copy()
 
         # --- pose conditions (src/planner.cpp:147-166) -------------------
@@ -275,19 +350,28 @@ class MlxPipeline:
                 frame = boundary if boundary < 4 else frames - 8 + boundary
                 pose_condition[frame] = normalized_poses[boundary]
                 has_pose_condition[frame] = constraints.has_poses[boundary]
-        pose_root = np.stack([
-            predicted_global_np[:, 0], predicted_global_np[:, 2],
-            predicted_global_np[:, 3], predicted_global_np[:, 4]], axis=1).astype(np.float32)
-        if capture_trace:
+        if defer_local:
+            pose_root_argument = mx.stack([predicted_global[:, 0], predicted_global[:, 2],
+                                           predicted_global[:, 3], predicted_global[:, 4]],
+                                          axis=1)
+            pose_root = pose_root_argument
+        else:
+            pose_root = np.stack([
+                predicted_global_np[:, 0], predicted_global_np[:, 2],
+                predicted_global_np[:, 3], predicted_global_np[:, 4]], axis=1).astype(np.float32)
+            pose_root_argument = mx.array(pose_root)
+        if capture_trace and not defer_local:
             trace["pose.root_condition"] = pose_root.reshape(-1).copy()
+        if capture_trace:
             trace["pose.pose_condition"] = pose_condition.reshape(-1).copy()
             trace["pose.has_pose_condition"] = has_pose_condition.astype(np.float32)
 
         # --- pose planner + sampling (src/planner.cpp:167-184) -----------
         pose_tokens = np.full((tokens, 8), 10, dtype=np.int32)
-        logits = self.pose.plan(pose_tokens, mx.array(pose_root), mx.array(pose_condition),
-                                mx.array(has_pose_condition.astype(np.float32)[:, None]),
-                                tokens, tokens)
+        logits = (self.pose.plan(pose_tokens, pose_root_argument, mx.array(pose_condition),
+                                 mx.array(has_pose_condition.astype(np.float32)[:, None]),
+                                 tokens, tokens) if pose_logits is None
+                  else pose_logits)
         logits_np = np.asarray(PosePlanner.reshape_logits(logits), dtype=np.float32)
         uniform = None
         if not sampling_argmax:
@@ -299,6 +383,13 @@ class MlxPipeline:
             trace["pose.sampling_uniforms"] = (
                 np.zeros(logits_np.size, dtype=np.float32) if uniform is None
                 else uniform.reshape(-1).copy())
+        if capture_trace and defer_local:
+            # One drain serves all three: the pose logits above already forced the
+            # device graph that produced them, so these reads are free.
+            local_np = np.asarray(predicted_local_device, dtype=np.float32)
+            trace["root.pred_local_root_values"] = local_np.reshape(-1).copy()
+            trace["pose.root_condition"] = np.asarray(
+                pose_root_argument, dtype=np.float32).reshape(-1).copy()
 
         # --- VQ codebook lookup (src/planner.cpp:186-198) ----------------
         if fast:
@@ -314,24 +405,40 @@ class MlxPipeline:
         if capture_trace:
             trace["decoder.quantized"] = quantized.reshape(-1).copy()
 
-        external_condition = np.stack(
-            [predicted_local[:, 1], predicted_local[:, 2]], axis=1).astype(np.float32)
+        if defer_local:
+            external_argument = mx.stack([predicted_local_device[:, 1],
+                                          predicted_local_device[:, 2]], axis=1)
+        else:
+            external_condition = np.stack(
+                [predicted_local[:, 1], predicted_local[:, 2]], axis=1).astype(np.float32)
+            external_argument = mx.array(external_condition)
         if capture_trace:
-            trace["decoder.external_condition"] = external_condition.reshape(-1).copy()
+            if defer_local:
+                trace["decoder.external_condition"] = np.asarray(
+                    external_argument, dtype=np.float32).reshape(-1).copy()
+            else:
+                trace["decoder.external_condition"] = external_condition.reshape(-1).copy()
             trace["decoder.has_target_condition"] = has_pose_condition.astype(np.float32)
 
         # --- VQ decoder ---------------------------------------------------
-        decoded = np.asarray(
-            self.decoder.decode(mx.array(quantized), mx.array(external_condition),
-                                mx.array(pose_condition),
-                                mx.array(has_pose_condition.astype(np.float32)[:, None]), tokens),
-            dtype=np.float32).reshape(frames, 413)
-        if capture_trace:
-            trace["decoder.output"] = decoded.reshape(-1).copy()
+        # Round-3 switch ``decoder_defer``: when nothing needs the decoder output
+        # on the host, hand it straight to ``decode_motion`` instead of reading it
+        # back and re-uploading it.  Same values either way -- this removes a
+        # host synchronisation, not a computation.
+        decoded_device = self.decoder.decode(
+            mx.array(quantized), external_argument, mx.array(pose_condition),
+            mx.array(has_pose_condition.astype(np.float32)[:, None]), tokens)
+        if capture_trace or not nn._opt("decoder_defer"):
+            decoded = np.asarray(decoded_device, dtype=np.float32).reshape(frames, 413)
+            decoded_argument = mx.array(decoded)
+            if capture_trace:
+                trace["decoder.output"] = decoded.reshape(-1).copy()
+        else:
+            decoded_argument = decoded_device
 
         # --- motion representation decode (src/motion_rep.cpp:252-303) ---
         roots, rotations = motion_rep.decode_motion(
-            mx.array(decoded), self.mean, self.std, self.parents, initial_x, initial_z)
+            decoded_argument, self.mean, self.std, self.parents, initial_x, initial_z)
         roots_np = np.asarray(roots, dtype=np.float32)
         rotations_np = np.asarray(rotations, dtype=np.float32)
         if capture_trace:

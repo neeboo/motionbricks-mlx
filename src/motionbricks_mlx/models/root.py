@@ -115,6 +115,31 @@ class RootPlanner:
 
     # -- stages ----------------------------------------------------------
 
+    def probe(self, global_root: mx.array, local_root: mx.array, poses: mx.array,
+              global_mask: mx.array, local_mask: mx.array,
+              pose_mask: mx.array) -> tuple[mx.array, tuple[mx.array, mx.array] | None]:
+        """``(duration logits, (frame_emb, positioned))`` for the duration probe.
+
+        ``run_transition`` needs the probe's logits *and* then calls :meth:`plan`,
+        which would rebuild the very same boundary embedding from the very same
+        tensors -- an 0.68 ms p50 duplicate on this machine (measured, report
+        section 24).  Returning the boundary tensors lets the caller hand them
+        back through ``plan(boundary=...)``; round-3 switch
+        ``root_boundary_reuse`` decides whether it does.  The tensors are the
+        identical arrays the duplicate call would have produced, so reusing them
+        is exact, not an approximation.
+        """
+        if not nn._opt("root_fast"):
+            return self._duration_logits_reference(
+                global_root, local_root, poses, global_mask, local_mask, pose_mask), None
+        frame_emb, positioned = self._boundary(global_root, local_root, poses,
+                                               global_mask, local_mask, pose_mask)
+        if nn._opt("root_compile"):
+            logits = self._stage("duration", self._duration_core)((), positioned)
+        else:
+            logits = self._duration_core(positioned)
+        return logits, (frame_emb, positioned)
+
     def duration_logits(self, global_root: mx.array, local_root: mx.array,
                         poses: mx.array, global_mask: mx.array, local_mask: mx.array,
                         pose_mask: mx.array) -> mx.array:
@@ -123,14 +148,9 @@ class RootPlanner:
         Uses the masked-duration embedding (upstream token index 12, i.e.
         ``duration_input_tokens = 18``), independent of the planned token count.
         """
-        if not nn._opt("root_fast"):
-            return self._duration_logits_reference(
-                global_root, local_root, poses, global_mask, local_mask, pose_mask)
-        _, positioned = self._boundary(global_root, local_root, poses,
-                                       global_mask, local_mask, pose_mask)
-        if nn._opt("root_compile"):
-            return self._stage("duration", self._duration_core)((), positioned)
-        return self._duration_core(positioned)
+        logits, _ = self.probe(global_root, local_root, poses,
+                               global_mask, local_mask, pose_mask)
+        return logits
 
     def _duration_core(self, positioned: mx.array) -> mx.array:
         duration_emb = self.w["_proj_input_num_tokens.weight"][12]
@@ -154,20 +174,27 @@ class RootPlanner:
              global_mask: mx.array, local_mask: mx.array, pose_mask: mx.array,
              requested_tokens: int, dense_target: mx.array,
              dense_target_mask: mx.array,
-             duration_logits: mx.array | None = None) -> tuple[mx.array, mx.array]:
+             duration_logits: mx.array | None = None,
+             boundary: tuple[mx.array, mx.array] | None = None) -> tuple[mx.array, mx.array]:
         """``run_root_planner_auto_probe``: ``(duration_logits, global_root_values)``.
 
         ``global_root_values`` is ``(requested_tokens * 4, 5)`` normalized.  When
         ``duration_logits`` is supplied (and ``root_dedup`` is on) the probe
         transformer is not rebuilt: the caller already ran it, and the accepted
-        port discarded this second copy.
+        port discarded this second copy.  ``boundary`` is the ``(frame_emb,
+        positioned)`` pair :meth:`probe` returned; when it is supplied and
+        ``root_boundary_reuse`` is on, the boundary embedding is not recomputed
+        either.
         """
         if not nn._opt("root_fast"):
             return self._plan_reference(global_root, local_root, poses, global_mask,
                                         local_mask, pose_mask, requested_tokens,
                                         dense_target, dense_target_mask)
-        frame_emb, positioned = self._boundary(global_root, local_root, poses,
-                                               global_mask, local_mask, pose_mask)
+        if boundary is not None and nn._opt("root_boundary_reuse"):
+            frame_emb, positioned = boundary
+        else:
+            frame_emb, positioned = self._boundary(global_root, local_root, poses,
+                                                   global_mask, local_mask, pose_mask)
         reuse = duration_logits is not None and nn._opt("root_dedup")
         if reuse:
             logits = duration_logits
