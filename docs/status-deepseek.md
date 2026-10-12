@@ -512,3 +512,95 @@ viewer**（`scripts/mlx_viewer.py`、`viewer/`、`tests/test_viewer_*.py`，HEAD
 `scripts/eval_*.py`、`tests/test_eval_*.py`、`motion-representation.md`、`README.md`、`NOTICE`、
 `LICENSE`、`pyproject.toml` 未动；`mlx_plan.py` / `mlx_align.py` / `mlx_bench.py` 语义未改，
 所有 `mlx_plan.py` 调用显式带 `--out`；参考仓库全程只读（`find -newermt` 证明零修改）；**无 push**。
+
+# Round 8（A 侧）：给 MLX 版做一个"拉起来就能看"的页面
+
+**任务**：用户要的是"像那个 cpp 版本一样，有个网页拉起来让我看效果"——不是跑分表。
+所以本轮唯一的成品是**一个只绑 `127.0.0.1` 的本地页面**，上面每一段动作都由本机的
+MLX 现场规划。长版说明在 [VIEWER.md](VIEWER.md)。
+
+**① 页面**：`http://127.0.0.1:8848/`（PID `78447`，日志 `artifacts/viewer-run/server.log`，
+PID 也写在 `artifacts/viewer-run/server.pid`；`kill "$(cat artifacts/viewer-run/server.pid)"` 停）。
+受管后台任务起的，**没有 `nohup` 乱扔进程**。
+
+**② 起法**：`./.venv/bin/python scripts/mlx_viewer.py --port 8848 --device gpu`。
+只加 stdlib（`http.server`），**`pyproject.toml` 未动、没有新依赖**。
+
+**③ `curl` 证据**（全部实测）：首页 `HTTP 200 / 4231 B / 2.9 ms`；
+`style.css` `200 / 8520 B`、`app.js` `200 / 23985 B`、`rig.js` `200 / 9409 B`、
+`vendor/three.module.min.js` `200 / 338914 B`、`vendor/three.core.min.js` `200 / 381130 B`、
+`vendor/THREE-LICENSE.txt` `200 / 1102 B`；一次真实交互
+`GET /api/plan?style=walk&seed=1&move=0,1&facing=0,1&reset=1`
+→ `HTTP 200 / 96672 B / 59.3 ms`，返回 44 帧 × 34 关节的 `world_positions_xyz`
+（4488 个数，长度自洽）+ 4 帧目标关键帧。换 4 个真实 style 各触发一次（都 `reset=1`，
+即"新建 agent + 重播种 + 规划"）：
+
+| style | frames | plan_ms | travel |
+|---|---|---|---|
+| `walk` | 44 | 27.8 | 1.097 m |
+| `walk_zombie` | 44 | 26.1 | 0.710 m |
+| `idle` | 24 | 39.3 | 0.007 m |
+| `stealth_walk` | 32 | 101.5 | 1.028 m |
+
+（`stealth_walk` 那 101.5 ms 是换 style 后第一拍的代价：新 agent + 新上下文 + 一次冷图，
+不是稳态；稳态是下面那张表里的 28.3 ms。`idle` 几乎不位移是对的。）
+
+**④ 交互清单**：15 个真实 `.mbstyle` 任选；Play/Pause；Reset camera；Ground trail；
+Placed target keyframes；Replan while walking；W/A/S/D 盘（再点同键即停）+
+`↺ Turn` / `Turn ↻` / `Stop`；seed 输入框 + `Next seed`；
+`?style=&seed=&move=` 地址栏预置。换 style / 换 seed / 走停 / 转身**四种**都会立刻触发一次新规划。
+
+**⑤ 性能实测**（load 8.1–18.0，含本轮的 Chrome）：
+
+| 指标 | 实测 |
+|---|---|
+| 冷启动（载入 + 预热） | **370.7 ms** |
+| 首帧（页面 start → 第一帧上屏） | **84.4 / 117.3 / 129.9 ms**（三次不同会话） |
+| 页面可用（`ready_ms`） | **17.0 / 39.6 / 42.1 ms** |
+| 连续步频（服务端规划 p50） | **28.3 ms → 27.9 clips/s**（30 clip 串行） |
+| 其中 FK p50 | **2.5 ms** |
+| HTTP 往返 p50（含 ~100 KB JSON） | **34.8 ms** |
+| 等效帧吞吐 / 相对 30 fps 余量 | **1227 帧/秒 / 40.9×** |
+
+参考版 GGML 的 **≈380 ms p50（M1 Max）** 是**任务书给的值**，我在只读 checkout 里
+**没找到出处**（`docs/*.md` 无 p50 表），所以按引用处理；同口径可复现的对照是本仓库
+自己的 **26.6 ms**（[SUMMARY.md](SUMMARY.md) 第 1 节），与本页服务端 p50 一致。
+
+**⑥ 复用与归属**：参考仓库**全程只读、零修改**。`vendor/three.*` 与 `style.css` 前 63 行
+**逐字节复制**（sha256 与参考版相同：three.module `852c06b9…d2af`、three.core
+`4183cee0…ba82`、style.css 前缀 `bf95d13b…1e9a`）；`viewer/rig.js` 的
+`app.js:88-95 / 97-113 / 115-252 / 254-272` 四段**逐字复制**（209 行里只有 32 行是新增的
+来源注释 + `bindScene` + `export`），唯一机械改动是把模块级 `scene` 单例改成注入。
+`index.html` / `app.js` / 服务器是**本仓库新写**。接缝之所以免费：参考版
+`SkeletonRig.poseWorld()` 吃的就是本仓库导出器已经在产的展平 `world_positions_xyz`。
+
+**⑦ 画面**：浏览器（无头 Chrome，REA `capture_browser_scenario`）**只做 goto + wait**，
+没有合成输入、没点界面、没抢焦点、没音频。主图 `artifacts/viewer-shots/viewer-final.png`
+（sha256 `f0f706960a1300b6…`，逐张重算校验）里 HUD 显示 `CLIPS 11 / WALKED 10.43 m /
+ROOT Z −7.88 m`，W 键高亮，地面轨迹可见——是真的在走。另三张：
+`viewer-hud-1-walk.png`、`viewer-walk-1440x900-1-walk.png`、`viewer-2-walk.png`。
+
+**⑧ 服务器里唯一的实现**：`world_positions()` 把 `plan_json.world_positions_xyz` 的双层
+Python 循环改成"保留关节序、批量化帧轴"，**逐位相同**（`np.array_equal`，见
+`tests/test_viewer_fk.py`），**14.9 ms → 1.34 ms/clip（11×）**。
+
+**⑨ 接缝连贯性**（`artifacts/viewer-run/continuity.txt`）：连续 5 个 clip，
+`advance = frames − 11`，clip N+1 第 0 帧与 clip N 第 `advance` 帧的骨盆差
+**4.4e-04 – 5.4e-04 m**，而世界 z 在累积 **0.775 → 1.760 → 2.706 → 3.666 m**。
+
+**⑩ 门禁**：GPU `ccda1952…` / CPU `262e77d4…` 用 `mlx_plan.py --out /tmp/...` 各跑一次，
+**两个都与 `out/` 逐字节相同**；`pytest -q` **242 passed / 1 skipped**
+（起点 209/1；另有 agent 报过 240/1/1 failed，那个 failed 就是我这边**还在写**的
+`tests/test_viewer_*.py`，现在是绿的）。load 8.07–18.02 已如实记录。
+
+**踩到的两个坑（都修了）**：① 抄 rig 时漏了 `app.js:91-95` 的向量暂存变量 →
+每个 rAF 一次 `ReferenceError: startPoint is not defined`；② `updateControl()` 在
+`buildRigs()` 之前把初始 `state.move` 归零 → 角色**原地踏步**（HUD `WALKED 0.86 m`），
+改成初始 `padKey:'w'` 后 `WALKED 10.43 m`。第 ② 个正好证明 HUD 必须画进画面里：
+数字只在侧栏的话，一张截图看不出"在走但没位移"。
+
+**红线遵守**：只新增 `viewer/**`、`scripts/mlx_viewer.py`、`tests/test_viewer_fk.py`、
+`tests/test_viewer_server.py`、`docs/VIEWER.md`、`artifacts/viewer-*/**`，只追加本文件；
+`training/**`、`train_*.py`、`eval/**`、`scripts/eval_*.py`、`tests/test_eval_*.py`、
+`motion-representation.md`、`README.md`、`NOTICE`、`LICENSE`、`pyproject.toml` 未动；
+没有新依赖；参考仓库只读；**无 push**。

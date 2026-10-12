@@ -1,0 +1,103 @@
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background:#090b10; color:#edf1f7; }
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+html, body, main { width:100%; height:100%; margin:0; overflow:hidden; }
+main { display:grid; grid-template-columns:minmax(0,1fr) 320px; grid-template-rows:minmax(0,1fr); }
+#viewport { min-width:0; min-height:0; background:radial-gradient(circle at 50% 36%,#20293a 0,#10141d 38%,#080a0f 76%); }
+#viewport canvas { display:block; width:100%; height:100%; }
+aside { min-width:0; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; padding:36px 28px; border-left:1px solid #2a3240; background:rgba(11,14,20,.96); box-shadow:-18px 0 60px #0008; }
+.eyebrow { margin:0 0 10px; color:#6be6ba; letter-spacing:.18em; font-size:11px; font-weight:750; }
+h1 { margin:0 0 12px; font-size:30px; letter-spacing:-.04em; }
+.lede { color:#9eabbc; line-height:1.45; margin:0 0 18px; }
+.legend { display:flex; gap:16px; margin:0 0 24px; color:#aeb9c8; font-size:12px; }
+.legend span { display:flex; align-items:center; gap:7px; }
+.legend i { display:block; width:20px; height:5px; border-radius:4px; box-shadow:0 0 10px currentColor; }
+.animated-swatch { color:#55efc4; background:#55efc4; }
+.target-swatch { color:#ff763b; background:#ff763b; transform:rotate(-8deg); }
+label { display:block; color:#c8d1dd; font-size:12px; font-weight:700; margin-bottom:8px; }
+select { width:100%; color:#f2f6fb; background:#171c26; border:1px solid #343d4d; border-radius:8px; padding:11px; font:inherit; }
+#kimodo-controls { margin-top:14px; padding-top:14px; border-top:1px solid #293140; }
+.kimodo-picker { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }
+#kimodo-play { color:#161008; background:#f4b860; border:1px solid #ffd08a; border-radius:8px; padding:0 14px; font:inherit; font-weight:800; }
+#kimodo-play:hover:not(:disabled) { background:#ffd08a; }
+#kimodo-upload { width:100%; margin-top:10px; padding:9px; border:1px solid #3a7867; border-radius:8px; color:#b9f8e3; background:#172720; font:inherit; cursor:pointer; }
+.upload-help, #kimodo-upload-status { color:#9eabbc; font-size:11px; line-height:1.4; margin:8px 0; overflow-wrap:anywhere; }
+#kimodo-upload-status[data-error="true"] { color:#ffad9b; }
+#kimodo-progress { margin-top:11px; padding:10px; border:1px solid #765b2e; border-radius:8px; background:#1f1a12; }
+#kimodo-progress div { display:flex; justify-content:space-between; gap:8px; color:#f7d89e; font-size:11px; }
+#kimodo-progress output { font-variant-numeric:tabular-nums; }
+#kimodo-progress progress { display:block; width:100%; height:8px; margin:8px 0; accent-color:#f4b860; }
+#kimodo-progress small { display:block; color:#bda984; font-size:10px; line-height:1.35; }
+button:disabled, select:disabled { cursor:not-allowed; opacity:.45; }
+#replay-controls { margin-bottom:4px; }
+#comparison-plan-row { margin:10px 0; }
+.replay-row { display:grid; grid-template-columns:auto minmax(0,1fr); gap:10px; align-items:center; }
+#replay-frame { width:100%; accent-color:#55efc4; }
+#replay-toggle { color:#dbe4ef; background:#171c26; border:1px solid #3a7867; border-radius:7px; padding:7px 12px; font:inherit; }
+.target-frame-control { margin-top:16px; }
+.target-frame-control label { display:flex; justify-content:space-between; margin-bottom:6px; }
+.target-frame-control output { color:#ff9a68; font-variant-numeric:tabular-nums; }
+#target-frame { display:block; width:100%; margin:0; accent-color:#ff763b; }
+.view-options { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:14px; }
+.view-options label { display:flex; align-items:center; gap:7px; margin:0; font-weight:600; color:#b7c2d0; }
+.view-options input { accent-color:#ff763b; }
+#reset-camera { color:#dbe4ef; background:#171c26; border:1px solid #343d4d; border-radius:7px; padding:7px 9px; font:inherit; font-size:11px; white-space:nowrap; }
+#reset-camera:hover { border-color:#59677b; background:#202735; }
+.target-help, .camera-help { margin:9px 0 0; color:#647286; font-size:11px; line-height:1.35; }
+.pad { margin:28px auto; width:176px; display:grid; grid-template:52px 52px / 52px 52px 52px; gap:8px; }
+.pad button { border:1px solid #3b4658; border-radius:10px; background:#181e29; color:#dae3ed; font-weight:800; font-size:16px; box-shadow:0 4px 12px #0005; }
+.pad button:first-child { grid-column:2; }
+.pad button:nth-child(2) { grid-row:2; grid-column:1; }
+.pad button:nth-child(3) { grid-row:2; grid-column:2; }
+.pad button:nth-child(4) { grid-row:2; grid-column:3; }
+.pad button.active { background:#2e735f; border-color:#77f0c4; transform:translateY(1px); }
+.live-actions { display:flex; justify-content:center; margin:-16px 0 22px; }
+.live-actions button { color:#ffe8a3; background:#352914; border:1px solid #a87a24; border-radius:9px; padding:10px 22px; font:inherit; font-weight:750; box-shadow:0 4px 12px #0005; }
+.live-actions button:hover:not(:disabled) { background:#493719; border-color:#e4ad40; }
+.live-actions button:disabled { opacity:.55; }
+.live-actions kbd { margin-left:7px; color:#cba85f; font:inherit; font-size:11px; }
+dl { border-top:1px solid #2b3341; margin-top:30px; padding-top:10px; }
+dl div { display:flex; justify-content:space-between; gap:10px; padding:8px 0; }
+dt { color:#778599; } dd { margin:0; text-align:right; color:#dce4ee; }
+#test-result { min-height:1.3em; color:#6be6ba; font-size:12px; }
+@media (max-width:760px) { main { grid-template-columns:1fr; grid-template-rows:minmax(0,1fr) minmax(0,auto); } aside { max-height:50dvh; padding:16px 20px; border-left:0; border-top:1px solid #2a3240; } .lede, dl, .target-help, .camera-help { display:none; } .legend { margin-bottom:12px; } .view-options { max-width:420px; } }
+
+/* ------------------------------------------------------------------ */
+/* MLX viewer additions.                                              */
+/*                                                                     */
+/* Everything above this line is the reference demo's style.css,       */
+/* copied verbatim (Apache-2.0, motion-bricks-cpp). The rules below     */
+/* only cover the controls this viewer adds; they reuse the palette    */
+/* declared in the :root block above (#55efc4 animated, #ff763b        */
+/* targets, #6be6ba accent) so both pages look the same.               */
+/* ------------------------------------------------------------------ */
+
+#mlx-status { min-height:1.3em; color:#6be6ba; font-size:12px; margin:12px 0 0; }
+#mlx-status[data-error="true"] { color:#ffad9b; }
+.mlx-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:end; }
+.mlx-row button, .mlx-buttons button { color:#dbe4ef; background:#171c26; border:1px solid #343d4d; border-radius:8px; padding:10px 12px; font:inherit; cursor:pointer; }
+.mlx-row button:hover, .mlx-buttons button:hover { border-color:#59677b; background:#202735; }
+.mlx-buttons { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }
+.mlx-buttons button { flex:1 1 auto; white-space:nowrap; }
+.mlx-buttons button[aria-pressed="true"] { background:#2e735f; border-color:#77f0c4; color:#eafff8; }
+#mlx-play[aria-pressed="true"] { background:#2e735f; border-color:#77f0c4; color:#eafff8; }
+input[type="number"], input[type="text"] { width:100%; color:#f2f6fb; background:#171c26; border:1px solid #343d4d; border-radius:8px; padding:11px; font:inherit; }
+.mlx-field { margin-top:14px; }
+.mlx-checkline { display:flex; align-items:center; gap:8px; margin-top:12px; color:#b7c2d0; font-size:12px; font-weight:600; }
+.mlx-checkline input { accent-color:#55efc4; }
+#mlx-stats { margin-top:18px; }
+#mlx-stats dt { font-variant-numeric:tabular-nums; }
+
+/* Live readout drawn over the viewport, so the numbers are in the same
+   frame as the animation (and in screenshots) rather than only in the
+   scrolling sidebar. */
+#viewport { position:relative; }
+#mlx-hud {
+  position:absolute; left:14px; bottom:14px; z-index:2;
+  display:grid; grid-template-columns:auto auto; gap:2px 12px;
+  padding:10px 14px; border:1px solid #24303f; border-radius:10px;
+  background:rgba(9,12,17,.72); backdrop-filter:blur(3px);
+  font-size:11px; font-variant-numeric:tabular-nums; pointer-events:none;
+}
+#mlx-hud .hud-key { color:#6b7b90; letter-spacing:.06em; text-transform:uppercase; font-weight:700; }
+#mlx-hud .hud-value { color:#d9fff3; text-align:right; }

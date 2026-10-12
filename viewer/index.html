@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en" data-mlx-status="starting">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>MotionBricks MLX · G1</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <section id="viewport" aria-label="Animated G1 skeleton">
+      <div id="mlx-hud" aria-live="off">
+        <span class="hud-key">style</span><span class="hud-value" id="hud-style">—</span>
+        <span class="hud-key">plan</span><span class="hud-value" id="hud-plan">—</span>
+        <span class="hud-key">step rate</span><span class="hud-value" id="hud-hz">—</span>
+        <span class="hud-key">walked</span><span class="hud-value" id="hud-walked">0.00 m</span>
+        <span class="hud-key">root z</span><span class="hud-value" id="hud-rootz">—</span>
+        <span class="hud-key">clips</span><span class="hud-value" id="hud-clips">0</span>
+      </div>
+    </section>
+    <aside>
+      <p class="eyebrow">MOTIONBRICKS / MLX</p>
+      <h1>Whole-body motion</h1>
+      <p class="lede" id="lede">Every clip on this page is planned live by the MLX port on
+        this machine. Pick a style, move with the pad, and the character replans while it walks.</p>
+
+      <div class="legend" aria-label="Skeleton legend">
+        <span><i class="animated-swatch"></i>Animated model</span>
+        <span><i class="target-swatch"></i>Target keyframes</span>
+      </div>
+
+      <div id="live-style">
+        <label for="style-select">Upstream pose style</label>
+        <select id="style-select" aria-label="Motion style"></select>
+      </div>
+
+      <div class="mlx-field">
+        <label for="seed-input">Sampling seed</label>
+        <div class="mlx-row">
+          <input id="seed-input" type="number" step="1" value="1" aria-label="Sampling seed">
+          <button id="seed-next" type="button">Next seed</button>
+        </div>
+      </div>
+
+      <div class="pad" aria-label="Directional controls">
+        <button data-key="w" data-x="0" data-z="1" aria-label="Walk forward">W</button>
+        <button data-key="a" data-x="-1" data-z="0" aria-label="Walk left">A</button>
+        <button data-key="s" data-x="0" data-z="-1" aria-label="Walk backward">S</button>
+        <button data-key="d" data-x="1" data-z="0" aria-label="Walk right">D</button>
+      </div>
+
+      <div class="mlx-buttons">
+        <button id="mlx-play" type="button" aria-pressed="true">Pause</button>
+        <button id="mlx-camera" type="button">Reset camera</button>
+      </div>
+
+      <div class="mlx-buttons">
+        <button id="mlx-turn-left" type="button" aria-label="Turn left">&#8634; Turn</button>
+        <button id="mlx-turn-right" type="button" aria-label="Turn right">Turn &#8635;</button>
+        <button id="mlx-stop" type="button">Stop</button>
+      </div>
+
+      <label class="mlx-checkline"><input id="mlx-live" type="checkbox" checked> Replan while walking</label>
+      <label class="mlx-checkline"><input id="mlx-trail" type="checkbox" checked> Ground trail</label>
+      <label class="mlx-checkline"><input id="mlx-targets" type="checkbox" checked> Placed target keyframes</label>
+
+      <p id="mlx-status" role="status" aria-live="polite">Loading model…</p>
+
+      <dl id="mlx-stats">
+        <div><dt>Plan latency (last)</dt><dd id="stat-plan">—</dd></div>
+        <div><dt>Sustained step rate</dt><dd id="stat-hz">—</dd></div>
+        <div><dt>Clips planned</dt><dd id="stat-clips">0</dd></div>
+        <div><dt>Clip</dt><dd id="stat-clip">—</dd></div>
+        <div><dt>Travel (last clip)</dt><dd id="stat-travel">—</dd></div>
+        <div><dt>Walked (this session)</dt><dd id="stat-walked">0.00 m</dd></div>
+        <div><dt>Playback</dt><dd id="stat-playback">—</dd></div>
+        <div><dt>Backend</dt><dd id="stat-backend">—</dd></div>
+        <div><dt>Page → first pose</dt><dd id="stat-firstframe">—</dd></div>
+      </dl>
+
+      <p class="camera-help">Drag to orbit · wheel to zoom · W/A/S/D or the pad to move ·
+        the direction you press becomes the facing, exactly like the reference demo.</p>
+    </aside>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
