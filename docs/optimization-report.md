@@ -1462,3 +1462,329 @@ duration-homogeneous); the **token-campaign table** (per-`B` identity rate, wors
 deviation, safety margin); the stage-share/ceiling arithmetic; the reproducible
 tier and the manifest fields; the byte-identity evidence for the default path;
 the load average; the remaining bottleneck; and the git state.
+
+---
+
+# Round 4 results
+
+Everything below was written after the measurements.  Section 28 was not edited
+after it was committed (`94beb41`, the first commit of this round).
+
+## 29. Item 1 — what was built, and how the batch is synchronised
+
+Round 3 batched the pose stage through a **one-parameter seam**
+(`run_transition(..., pose_logits=...)`).  That is enough for one stage, but the
+three stages are a dependency chain through host-side glue: the pose planner's
+inputs are a function of the root planner's output, and the decoder's inputs are
+a function of the pose planner's output.  A seam that only substitutes one
+forward therefore cannot propagate a batched stage's perturbation into the next
+stage's inputs, and measuring each stage against *serial* inputs would understate
+the deviation the bake actually produces.
+
+`models/bake.py` therefore gains a **stage driver**:
+
+* `StageDriver` owns a set of stages (`root` covers the duration probe *and* the
+  root-token/conv decoder body) and stands in for their forwards through a new
+  `bake=` parameter of `run_transition`, which is `None` — the accepted path,
+  byte for byte — unless a caller asks for it.  When a batched forward is not
+  available yet the driver records that stage's inputs and raises `BakeSuspend`,
+  ending the run early;
+* once every scenario has reached the same boundary, **one** batched forward
+  produces every row (`duration_logits_batch`, `plan_values_batch`,
+  `PosePlanner.plan_batch`, `VqDecoder.decode_batch` — the last two are round 3's
+  and this round's, all built the same way: `mx.compile` + `mx.vmap` over the
+  *single-scenario* body), and the next round of runs proceeds;
+* the final pass gives each row back to the accepted code, so sampling, the
+  codebook gather and the motion decode are unmodified.
+
+The price of not rewriting the accepted orchestrator is that the partial passes
+re-execute the host glue.  Section 33 measures that price exactly.
+
+`Agent.constraints_for` was split out of `Agent.plan` so the bake and the accepted
+path build the boundary conditions with one piece of code; `plan` calls it too.
+
+### 29.1 Stage throughput (the *stage* number, never the bake number)
+
+Homogeneous batch (one style, different seeds — one token-count group, so a
+single batched forward covers the whole batch), load `10.4 -> 11.2`, 5 repeats,
+same process:
+
+| B | root serial | root batched | root speedup | pose serial | pose batched | pose speedup | decoder serial | decoder batched | decoder speedup |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 7.264 ms | 7.241 | **1.00x** | 7.905 | 9.847 | **0.80x** | 3.960 | 4.195 | **0.94x** |
+| 2 | 10.086 | 8.814 | **2.29x** | 6.423 | 7.884 | **1.63x** | 3.272 | 3.347 | **1.96x** |
+| 4 | 8.896 | 9.098 | **3.91x** | 9.105 | 11.921 | **3.06x** | 3.640 | 3.830 | **3.80x** |
+| 8 | 8.313 | 9.277 | **7.17x** | 6.686 | 10.786 | **4.96x** | 3.235 | 3.596 | **7.20x** |
+| 16 | 8.427 | 12.460 | **10.82x** | 8.625 | 18.124 | **7.61x** | 3.378 | 5.590 | **9.67x** |
+
+(An earlier load-`13.1` run of the same configuration gave root / pose / decoder
+`10.46x / 9.58x / 11.17x` at `B = 16`; the spread between the two runs is the
+machine, not the code.)
+
+The three stages scale the way the pose stage did in round 3 — and this is what
+makes the bake ceiling move: batching *one* stage that is ~1/4 of a step cannot
+exceed ~1.25x, no matter how well it scales.
+
+## 30. Item 2 — end-to-end bake throughput
+
+"Serial" is `B` scenarios planned one after another through the accepted
+pipeline; "batched" is the stage-synchronised driver, which returns `B` final
+motions.  Both arms warm up once before timing, alternate which goes first, and
+are timed inside one process: 5 repeats, median reported.  Load `14.2 -> 13.8`.
+
+**Duration-mixed batch** (four styles cycling — the fragmentation round 3
+identified):
+
+| B | serial p50 | batched p50 | speedup | per scenario (batched) | throughput | token groups |
+|---|---|---|---|---|---|---|
+| 1 | 29.71 ms | 29.48 | **1.008x** | 29.48 ms | 33.93/s | {11:1} |
+| 2 | 53.99 | 38.12 | **1.416x** | 19.06 ms | 52.47/s | {11:2} |
+| 4 | 107.35 | 102.16 | **1.051x** | 25.54 ms | 39.15/s | {11:2, 7:1, 8:1} |
+| 8 | 239.13 | 159.31 | **1.501x** | 19.91 ms | 50.22/s | {11:3, 7:2, 8:1, 6:2} |
+| 16 | 476.88 | 212.56 | **2.244x** | 13.28 ms | 75.27/s | {11:5, 7:7, 8:1, 6:3} |
+
+**Duration-homogeneous batch** (one style, different seeds — one group):
+
+| B | serial p50 | batched p50 | speedup | per scenario (batched) | throughput | token groups |
+|---|---|---|---|---|---|---|
+| 4 | 116.51 ms | 63.08 | **1.847x** | 15.77 ms | 63.41/s | {11:4} |
+| 8 | 230.29 | 97.70 | **2.357x** | 12.21 ms | 81.89/s | {11:8} |
+| 16 | 515.70 | 183.41 | **2.812x** | 11.46 ms | 87.24/s | {11:16} |
+
+A second, independent run of both configurations at load `13.8 -> 14.1`
+(and, for the homogeneous one, a third at load `16.8`) reproduced the shape and
+gave `2.372x / 83.37/s` (mixed `B = 16`) and `3.006x / 105.39/s` /
+`2.858x / 100.76/s` (homogeneous `B = 16`).  The campaign numbers below were
+identical to the last digit in every run; only the timings moved with the load.
+
+### 30.1 The ceiling moved, and here is by how much
+
+| configuration at `B = 16`, homogeneous | end-to-end speedup | throughput |
+|---|---|---|
+| round 3: pose stage only | 1.499x | 52.41/s |
+| round 4: pose + root | 2.133x | 73.69/s |
+| round 4: pose + root + decoder | **2.812x** | **87.24/s** |
+
+Each stage earns its own share of the step, which is the opposite of round 3's
+result: there the ceiling was structural (one stage of four), here it is set by
+what is left unbatched.  That is now the **host glue**, and section 33 measures
+it.
+
+Grouping by duration is still worth more than raising `B`: at `B = 16` the
+homogeneous batch is `2.812x` against the mixed batch's `2.244x`, and it uses one
+compiled variant instead of four.
+
+## 31. Item 3 — the token campaign
+
+Per-scenario comparison against **the same scenario run alone** (`B = 1`
+semantics), for every stage set.  `pose.tokens`, `pose.sampling_uniforms`, the
+selected duration and the final action:
+
+| run | B | scenarios | tokens identical | uniforms identical | duration identical | differing tokens | worst `roots` | worst `rotations` | worst angle |
+|---|---|---|---|---|---|---|---|---|---|
+| mixed | 1 | 1 | **1/1** | 1/1 | 1/1 | 0/88 | 9.090e-07 m | 1.144e-05 | 0.0437 deg |
+| mixed | 2 | 2 | **2/2** | 2/2 | 2/2 | 0/176 | 5.923e-07 | 8.292e-06 | 0.0452 |
+| mixed | 4 | 4 | **4/4** | 4/4 | 4/4 | 0/296 | 5.923e-07 | 8.292e-06 | 0.0454 |
+| mixed | 8 | 8 | **8/8** | 8/8 | 8/8 | 0/536 | 1.267e-06 | 8.076e-06 | 0.0626 |
+| mixed | 16 | 16 | **16/16** | 16/16 | 16/16 | 0/1040 | 2.027e-06 | 1.052e-05 | 0.0537 |
+| homog. | 4 | 4 | **4/4** | 4/4 | 4/4 | 0/352 | 8.047e-07 | 5.804e-06 | 0.0590 |
+| homog. | 8 | 8 | **8/8** | 8/8 | 8/8 | 0/704 | 6.258e-07 | 8.434e-06 | 0.0582 |
+| homog. | 16 | 16 | **16/16** | 16/16 | 16/16 | 0/1408 | 1.140e-06 | 2.753e-05 | 0.0541 |
+
+**59 scenarios, 0 of 4600 token decisions differ, and every duration is
+re-selected identically.**  Unlike round 3, the final action is **not**
+bit-identical: the batched root and decoder stages perturb the conditions that
+reach the motion decode, so `roots` move by up to `2.027e-06 m` (mixed `B = 16`)
+and `rotations` by up to `2.753e-05`.  For scale, `mlx_align`'s tolerances are
+`1.0e-3` on `roots` and `2.0e-3` on `rotations`, so the bake's action deviation
+is `2.0e-03x` and `1.4e-02x` of the tolerance it would be judged against — three
+to two orders of magnitude inside it.  Round 3's exact-zero column was a
+*consequence of batching only the pose stage*: with the tokens equal, everything
+downstream of the sample was a deterministic function of unchanged conditions.
+
+### 31.1 The safety margin, and why it is the important number this round
+
+The metric is round 3's, unchanged: `max perturbation / min decision margin`,
+where the perturbation is `max |batched - serial|` on the quantity feeding a
+discrete decision and the margin is the smallest `top1 - top2` gap of the noised
+scores.
+
+**Control (round 3's stage set, re-measured by this round's code):**
+pose-only, homogeneous, `B = 16`: perturbation `3.357e-04`, margin `2.985e-03`,
+ratio **`0.1124x`** — the report's `0.112x` and its `3.357e-04`, reproduced
+exactly.  That is the check that the two rounds are being compared by the same
+instrument.
+
+**Round 4:**
+
+| configuration | B | pose perturbation | min pose margin | **ratio** | headroom |
+|---|---|---|---|---|---|
+| pose only (control) | 4 | 1.068e-04 | 2.985e-03 | **0.0358x** | 28x |
+| pose only (control) | 8 | 3.052e-04 | 2.985e-03 | **0.1022x** | 10x |
+| pose only (control) | 16 | 3.357e-04 | 2.985e-03 | **0.1124x** | 8.9x |
+| all three, homogeneous | 4 | 1.801e-03 | 2.985e-03 | **0.6031x** | 1.7x |
+| all three, homogeneous | 8 | 1.579e-03 | 2.985e-03 | **0.5290x** | 1.9x |
+| all three, homogeneous | 16 | 1.221e-03 | 2.985e-03 | **0.4089x** | 2.4x |
+| all three, mixed | 1 | 6.027e-04 | 2.985e-03 | **0.2019x** | 5.0x |
+| all three, mixed | 2 | 1.446e-03 | 2.985e-03 | **0.4843x** | 2.1x |
+| all three, mixed | 4 | 2.045e-03 | 2.985e-03 | **0.6849x** | 1.5x |
+| all three, mixed | 8 | 1.999e-03 | 2.985e-03 | **0.6695x** | 1.5x |
+| all three, mixed | 16 | 3.113e-03 | 2.985e-03 | **1.0426x** | **none** |
+
+Three facts to carry forward:
+
+1. **Propagating the batched root and decoder multiplies the pose-logit
+   perturbation by up to ~9x.**  At `B = 16` homogeneous it is `1.221e-03` against
+   the pose-only `3.357e-04` (`3.6x`); at `B = 16` mixed it is `3.113e-03`
+   (`9.3x`).  The perturbation reaches the pose planner through the predicted
+   local root and the pose condition, which is exactly the propagation a
+   single-parameter seam would have hidden.
+2. **The margin itself is unchanged** (`2.985e-03` in every configuration — it is
+   a property of the reference arm's decisions, and the fixtures are the same
+   ones round 3 used).  So the change in the ratio is entirely the change in the
+   perturbation.
+3. **`B = 16` on the mixed batch has no headroom left**: `1.0426x` means the
+   worst-case perturbation is already larger than the tightest decision margin in
+   the batch.  That the campaign still came out `16/16` is data-dependence, not
+   safety: the largest perturbation and the tightest margin are different
+   decisions.  This is precisely the property decision 0006 item 5 warns about.
+
+The duration decision is never at risk: its margins are `1.101e-01` to
+`2.171` and its perturbations `3.8e-06` to `4.6e-05`, ratios `4.2e-04` at worst.
+
+## 32. Item 4 — the tier, and what the manifest must record
+
+Per decision `0006`, the **reproducible bake tier** is the largest `B` at which
+every scenario of the campaign matches the same scenario run alone on
+`pose.tokens`, `pose.sampling_uniforms` and the final action.
+
+**On this evidence the campaign passes at every measured `B` up to 16** (59/59
+scenarios, 0/4600 decisions), so under a plain reading of the rule the tier is
+`B <= 16` for the full-stage bake too.  Two qualifications are load-bearing and
+are what the manifest has to carry:
+
+* `B = 16` on a duration-**mixed** batch has **no margin** (`1.0426x`): the
+  campaign passed, but the worst-case perturbation already exceeds the tightest
+  decision margin, so the pass is data dependence.  Recommending it for release
+  would be quoting a coin flip that happened to land heads.
+* The final action is **no longer bit-identical** (up to `2.027e-06 m` on
+  `roots`).  Decision 0006 item 4 says the criterion "is the discrete token and
+  the final action, not float bit-for-bit", so this is admissible *if* the action
+  deviation is recorded — which is why it is a manifest field below and not a
+  silent tolerance.
+
+**Recommendation to the lead** (the tier is the lead's to ratify): treat the
+tier as decided by the campaign *and conditional on the margin*, i.e.
+
+* **release tier: `B <= 8`** — passes the campaign and keeps `>= 1.5x` headroom
+  (mixed `0.6695x`, homogeneous `0.5290x`), for all three stage sets;
+* **draft tier: `B = 16` and above** — passes this campaign but with
+  `<= 1.04x` headroom on a mixed batch;
+* `B = 1` is *slower* than serial (`1.008x` mixed, `0.895x` homogeneous): a
+  batched forward is never bitwise and at `B = 1` there is no work to amortise, so
+  a bake should never be run at `B = 1`.
+
+**Manifest fields** (in addition to round 3's `batch_size` / `bake_tier`):
+
+| field | value on this build |
+|---|---|
+| `batch_size` | the `B` used |
+| `bake_tier` | `reproducible` (B<=8) / `draft` (B>=16) |
+| `bake_stages` | `["root", "pose", "decoder"]` |
+| `bake_stage_switches` | `bake_root_batch`, `bake_decoder_batch` |
+| `bake_grouping` | `duration-homogeneous` \| `duration-mixed` + the token groups |
+| `bake_campaign_scenarios` / `_token_decisions_differing` | `59` / `0` |
+| `bake_worst_roots_m` / `_rotations` | `2.027e-06` / `2.753e-05` |
+| `bake_safety_ratio` | `0.4089` (homog. 16) .. `1.0426` (mixed 16) |
+| `bake_min_decision_margin` | `2.985e-03` |
+| `bake_action_bit_identical` | `false` — with the deviation above |
+
+A proposal for the round-4 tier rule is written to
+`docs/decisions/0007-bake-full-stage-tier.md` (proposal only; the lead ratifies).
+
+## 33. Default path, load, and where the time goes now
+
+### 33.1 The default path is byte-identical
+
+Both seams are `None` on the accepted path, so the two documents this round
+started from are reproduced exactly after every change:
+
+```
+./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/r4/final-gpu.json
+./.venv/bin/python scripts/mlx_plan.py --device cpu --out /tmp/r4/final-cpu.json
+ccda1952...  /tmp/r4/final-gpu.json   ==  out/plan-mlx-gpu.json
+262e77d4...  /tmp/r4/final-cpu.json   ==  out/plan-mlx.json   (the standing rule)
+```
+
+`mlx_align plan` -> `ALIGNMENT OK` (worst margin `0.26x` tolerance),
+`mlx_align trace --device gpu` -> `TRACE OK` with `pose.tokens`,
+`pose.sampling_uniforms` and `decoder.quantized` at `0.000e+00`; the 5 seeds x 6
+steps token-identity gate passes; `pytest` is **199 passed / 1 skipped** against
+the **192 passed / 1 skipped** this round started from.
+
+### 33.2 Load
+
+Every run was on a busy shared desktop (no measurement was taken on an idle
+machine) and every table above carries its own figure: the mixed bake ran at
+`14.15 -> 13.76`, the homogeneous at `13.76 -> 14.08` (repeat: `16.85 -> 16.56`),
+the pose-only control at `10.36 -> 11.24` (mixed: `9.85 -> 9.35`), the pose+root
+attribution at `13.14 -> 13.08`, the `B = 1,2` rows at `11.06 -> 10.50`.
+
+### 33.3 Where the time goes now (homogeneous, `B = 16`, load `16.8`)
+
+The batched stages are no longer the cost.  Per scenario:
+
+| component | per scenario | how it was measured |
+|---|---|---|
+| batched root + pose + decoder | 2.58 ms | each forward timed alone, 5 repeats |
+| the pass with every row already available | 3.62 ms | `bake.host_pass_timing` |
+| **= single-pass cost of a bake** | **6.19 ms** | the two above |
+| the driver's re-execution of the partial passes | 3.73 ms | `measured - single-pass` |
+| **measured batched bake** | **9.92 ms** | the timed arm |
+| serial | 28.37 ms | the timed arm |
+
+Two things follow, and they are the next round's work:
+
+1. **The reference driver costs `3.73 ms/scenario` (38 % of the batched time).**
+   It re-executes the host glue once per stage boundary because it was built to
+   leave `run_transition` alone.  A single-pass orchestrator that extracted the
+   glue into callable steps would take the homogeneous `B = 16` bake from
+   `2.812x` to about `28.37 / 6.19 = 4.6x` **without touching the batched
+   forwards**.
+2. **The floor is the host side.**  With all three batched forwards free, the
+   bake still costs `3.62 ms/scenario`, so the ceiling is about `28.37 / 3.62 =
+   7.8x` — and `58 %` of the single-pass cost is host work: `decode_motion`, the
+   agent maths, and the per-stage normalisation/glue.  That is the measured
+   target now, not the drain count of round 3 and not another stage.
+
+## 34. Reproduction (round 4)
+
+```
+# the frozen criteria, committed before any code change
+git show --stat 94beb41
+
+# end-to-end bake, every stage batched, 5 repeats, JSON for the tables
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all --bake 1,2,4,8,16 \
+    --bake-repeats 5 --devices gpu --json /tmp/r4/full-mixed.json
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all --bake 4,8,16 \
+    --bake-homogeneous --bake-repeats 5 --devices gpu --json /tmp/r4/full-homog.json
+
+# the stage table and the host-pass residual (homogeneous batches only)
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all --bake 1,2 \
+    --bake-homogeneous --bake-repeats 5 --devices gpu
+./.venv/bin/python scripts/mlx_bench.py --bake-stages all --bake 4,8,16 \
+    --bake-homogeneous --bake-repeats 5 --devices gpu --json /tmp/r4/residual.json
+
+# the round-3 control, re-measured by this round's metric, and the attribution
+./.venv/bin/python scripts/mlx_bench.py --bake-stages pose --bake 4,8,16 \
+    --bake-homogeneous --bake-repeats 5 --bake-metrics --devices gpu
+./.venv/bin/python scripts/mlx_bench.py --bake-stages root --bake 4,8,16 \
+    --bake-homogeneous --bake-repeats 5 --devices gpu
+
+# the gate
+./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/r4/final-gpu.json
+diff -q /tmp/r4/final-gpu.json out/plan-mlx-gpu.json
+./.venv/bin/python scripts/mlx_align.py plan out/ref/plan-ref.json /tmp/r4/final-gpu.json
+./.venv/bin/python scripts/mlx_align.py trace out/ref/trace/transition-0.json --device gpu
+./.venv/bin/python -m pytest -q
+```
