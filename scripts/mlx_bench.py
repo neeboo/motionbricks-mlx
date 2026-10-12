@@ -234,6 +234,99 @@ def paired_measure(device: str, steps: int, styles_dir: Path, bundle_path: Path,
     return report
 
 
+def bake_measure(device: str, styles_dir: Path, bundle_path: Path, batch_sizes,
+                 seed: int, repeats: int, homogeneous: bool = False) -> dict:
+    """Round-3 batch bake: ``B`` independent scenarios, serial vs batched pose.
+
+    The reference arm plans every scenario **alone** through the ordinary
+    pipeline (that *is* the ``B = 1`` result each batch row is compared with);
+    the batched arm feeds one batched pose forward per token-count group back
+    through the accepted pipeline via the ``pose_logits`` seam.  The two arms are
+    timed inside one process, alternating which goes first, so drift affects
+    both.
+
+    ``homogeneous`` uses one style for every scenario, so the whole batch shares
+    a duration and therefore a single batched forward: that is the *best case*
+    for this design, and the difference against the default (styles cycling) is
+    the cost of token-count fragmentation.
+    """
+    from motionbricks_mlx.models import bake as bake_module
+
+    bundle = Bundle(bundle_path, device=device)
+    pipeline = MlxPipeline(bundle)
+    style_names = [STYLES[0]] if homogeneous else list(STYLES)
+    report: dict = {"device": device, "repeats": repeats,
+                    "homogeneous": homogeneous, "batches": {}}
+    for size in batch_sizes:
+        scenarios = [
+            bake_module.Scenario(
+                label=f"B{size}-s{index}-{style_names[index % len(style_names)]}",
+                style=load_style(styles_dir / f"{style_names[index % len(style_names)]}.mbstyle"),
+                seed=seed + index,
+                movement=(0.2, 0.0, 0.0))
+            for index in range(size)]
+        serial_times: list[float] = []
+        batched_times: list[float] = []
+        single_times: list[float] = []
+        reference: list = []
+        batched_runs: list = []
+        # One untimed warm-up of each arm, so neither pays first-call compile
+        # cost inside a timed region.
+        records, single = bake_module.record_serial(pipeline, bundle, scenarios)
+        mx.eval(*bake_module.batched_logits(pipeline, records))
+        for repeat in range(repeats):
+            order = (True, False) if repeat % 2 == 0 else (False, True)
+            for arm_is_serial in order:
+                if arm_is_serial:
+                    started = time.perf_counter()
+                    records, single = bake_module.record_serial(pipeline, bundle,
+                                                                scenarios)
+                    serial_times.append((time.perf_counter() - started) * 1000.0)
+                    single_times = single
+                    reference = [record.run for record in records]
+                else:
+                    started = time.perf_counter()
+                    logits = bake_module.batched_logits(pipeline, records)
+                    runs = bake_module.rerun_batched(pipeline, bundle, records, logits)
+                    batched_times.append((time.perf_counter() - started) * 1000.0)
+                    batched_runs = runs
+        import statistics as _statistics
+        comparison = bake_module.compare(reference, batched_runs)
+        groups = bake_module.group_by_tokens(records)
+        entry = {
+            "batch_size": size,
+            "serial_ms_p50": _statistics.median(serial_times),
+            "serial_ms_min": min(serial_times),
+            "batched_ms_p50": _statistics.median(batched_times),
+            "batched_ms_min": min(batched_times),
+            "single_scenario_ms_p50": _statistics.median(single_times),
+            "single_scenario_ms_batched": _statistics.median(batched_times) / size,
+            "throughput_serial_per_s": size / (_statistics.median(serial_times) / 1000.0),
+            "throughput_batched_per_s": size / (_statistics.median(batched_times) / 1000.0),
+            "speedup": (_statistics.median(serial_times)
+                        / _statistics.median(batched_times)),
+            "token_groups": {str(k): len(v) for k, v in groups.items()},
+            "serial_times_ms": serial_times,
+            "batched_times_ms": batched_times,
+            "comparison": comparison,
+        }
+        report["batches"][str(size)] = entry
+        print(f"B={size:<3d} serial p50 {entry['serial_ms_p50']:8.2f} ms   "
+              f"batched p50 {entry['batched_ms_p50']:8.2f} ms   "
+              f"speedup {entry['speedup']:.3f}x   "
+              f"per-scenario {entry['single_scenario_ms_batched']:6.2f} ms   "
+              f"throughput {entry['throughput_batched_per_s']:6.2f}/s")
+        print(f"       tokens {comparison['token_identical']}/{comparison['scenarios']} "
+              f"identical, uniforms {comparison['uniform_identical']}/{comparison['scenarios']}, "
+              f"{comparison['differing_tokens']}/{comparison['total_tokens']} tokens differ; "
+              f"worst roots {comparison['worst_roots_m']:.3e} m, "
+              f"rotations {comparison['worst_rotations']:.3e}, "
+              f"angle {comparison['worst_angle_deg']:.4f} deg; "
+              f"groups {entry['token_groups']}")
+    bundle.release()
+    return report
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -250,11 +343,35 @@ def main() -> int:
                              "first is the baseline and they are interleaved")
     parser.add_argument("--paired-tokens", action="store_true",
                         help="with --paired, also compare pose.tokens per step")
+    parser.add_argument("--bake", default=None, metavar="B1,B2,...",
+                        help="round-3 batch bake: plan B independent scenarios "
+                             "serially and batched, and compare every row with "
+                             "its own B=1 result (e.g. --bake 1,2,4,8,16)")
+    parser.add_argument("--bake-repeats", type=int, default=5)
+    parser.add_argument("--bake-homogeneous", action="store_true",
+                        help="with --bake, use one style for every scenario so "
+                             "the batch is duration-homogeneous (best case)")
     args = parser.parse_args()
 
     if not (args.bundle / "manifest.json").is_file():
         print(f"error: {args.bundle} has no manifest.json", file=sys.stderr)
         return 2
+
+    if args.bake:
+        sizes = [int(item) for item in args.bake.split(",") if item.strip()]
+        reports = []
+        for device in args.devices.split(","):
+            device = device.strip()
+            if not device:
+                continue
+            report = bake_measure(device, args.styles, args.bundle, sizes,
+                                  args.seed, args.bake_repeats,
+                                  homogeneous=args.bake_homogeneous)
+            reports.append(report)
+        if args.json:
+            args.json.write_text(json.dumps(reports, indent=2) + "\n", encoding="utf-8")
+            print(f"wrote {args.json}")
+        return 0
 
     if args.paired:
         arms = [(f"arm{index}", parse_arm(spec))

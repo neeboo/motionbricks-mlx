@@ -45,6 +45,10 @@ class PosePlanner:
         self._position_tables: dict[int, mx.array] = {}
         self._duration_rows: dict[int, mx.array] = {}
         self._stage: nn.StageCache | None = None
+        # Round-3 batch bake: one compiled vmapped variant per (positions,
+        # num_tokens), because a batch can only hold scenarios that selected the
+        # same duration.
+        self._batch_variants: dict[tuple[int, int], object] = {}
 
     # -- reference implementation (unchanged) -----------------------------
 
@@ -201,6 +205,33 @@ class PosePlanner:
                                pose_condition, has_pose_condition, positions, num_tokens)
         return self._core(tokens, local_root_values, pose_condition, has_pose_condition,
                           positions, num_tokens)
+
+    def plan_batch(self, pose_tokens: mx.array, local_root_values: mx.array,
+                   pose_condition: mx.array, has_pose_condition: mx.array,
+                   positions: int, num_tokens: int) -> mx.array:
+        """``B`` independent scenarios through one batched forward, ``(B, positions, 80)``.
+
+        Every row must share ``positions``/``num_tokens``: the compiled variants
+        and the GGML layout reshapes are shape-keyed, and two scenarios that
+        selected different durations cannot share a batch.  ``mx.vmap`` supplies
+        the batch axis, so the body is the *single-scenario* code path.
+
+        This is **not** a drop-in for :meth:`plan`: lowering the body to batched
+        primitives changes the accumulation order of every ``matmul``, measured
+        at 1.07e-04 on the logits **even at B = 1** (report section 23), so a
+        batched row is never bitwise-equal to the serial plan.  That is exactly
+        what the bake's token campaign measures.
+        """
+        key = (positions, num_tokens)
+        variant = self._batch_variants.get(key)
+        if variant is None:
+            def body(tokens, local_root, condition, has_condition,
+                     _positions=positions, _num_tokens=num_tokens):
+                return self._core(tokens, local_root, condition, has_condition,
+                                  _positions, _num_tokens)
+            variant = mx.compile(mx.vmap(body, in_axes=(0, 0, 0, 0)))
+            self._batch_variants[key] = variant
+        return variant(pose_tokens, local_root_values, pose_condition, has_pose_condition)
 
     @staticmethod
     def reshape_logits(logits: mx.array) -> mx.array:

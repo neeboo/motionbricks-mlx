@@ -1079,12 +1079,16 @@ class Agent:
         self.context_roots, self.context_rotations = roots, rotations
 
     def plan(self, command: Command, style: Style,
-             capture_trace: bool = False) -> tuple[Motion, dict]:
+             capture_trace: bool = False,
+             pose_logits=None) -> tuple[Motion, dict]:
         """``plan_agent_impl`` (src/agent.cpp:419-455).
 
         ``capture_trace`` forwards to :meth:`MlxPipeline.run_transition` so a
         caller can diff the discrete ``pose.tokens``; it is off by default
-        because it copies every intermediate stage.
+        because it copies every intermediate stage.  ``pose_logits`` is the
+        round-3 bake seam (see ``MlxPipeline.run_transition``): a batch bake
+        supplies the pose planner's output and the stage is skipped, while all
+        the surrounding agent maths stays the accepted code.
         """
         if self.context_frames < 4:
             self.reset(style)
@@ -1103,7 +1107,7 @@ class Agent:
                 has_global_root=np.ones(8, np.uint8),
                 has_poses=np.ones(8, np.uint8)),
             seed=command.seed, sampling_argmax=command.sampling_argmax,
-            capture_trace=capture_trace)
+            capture_trace=capture_trace, pose_logits=pose_logits)
         motion = Motion(result.roots, result.rotations_xyzw,
                         constraints["target_root_translations"],
                         constraints["target_local_rotations_xyzw"])
