@@ -94,8 +94,9 @@ w05 这一对每帧的角上自己写着 `differing pixels 0/358400`；四个场
 `?t=<帧>&paused=1` 的一次真实导航，源 PNG 的 sha256 记在 `artifacts/switch-run/gif-digests.txt`
 （[VIEWER](docs/VIEWER.md) 第 10 轮 §6）。
 
-![条件化切换：SEAM GAP 0.17 mm、SEAM JUMP 1.66×、ROOT Z 0.88 m，画面里一根青色接缝柱](artifacts/switch-shots/live-switch-1440x900.png)
-![硬切对照：同一时刻同一相机，只差一个 ?naive=1，SEAM GAP —、ROOT Z 0.30 m、没有接缝柱](artifacts/switch-shots/hardcut-control-1440x900.png)
+| 条件化切换（本方法） | 硬切对照（同一时刻，只差 `?naive=1`） |
+|---|---|
+| ![条件化切换：SEAM GAP 0.17 mm、SEAM JUMP 1.66×、ROOT Z 0.88 m，画面里一根青色接缝柱](artifacts/switch-shots/live-switch-1440x900.png) | ![硬切对照：SEAM GAP —、SEAM JUMP —、ROOT Z 0.30 m，没有接缝柱](artifacts/switch-shots/hardcut-control-1440x900.png) |
 
 **这两张图证明什么**：**同一时刻、同一相机、只差 `?naive=1` 一个参数**的一对。左边是条件化切换，
 HUD 给出 `SEAM GAP 0.17 mm` / `SEAM JUMP 1.66×`（数字越小越好），画面里有一根**青色接缝柱**；
