@@ -1,4 +1,5 @@
 # motionbrick-mlx
+English: [README.en.md](README.en.md)
 
 在 Apple Silicon 上用 **MLX** 跑 MotionBricks 推理：默认是**单场景规划**
 （GPU p50 **26.6 ms**；GPU 与 CPU 两个后端产出**逐字节相同**的 plan 文档，对参考运行时的逐阶段对齐
