@@ -134,4 +134,4 @@ negative controls (each must trip its metric):
         boundary_root_max_m          good 0.03272 -> bad 0.6754
         boundary_rotation_max_deg    good 7.669 -> bad 7.669
 GATE PASS
-report: /Users/ghostcorn/dev/motionbrick-mlx/out/eval/gate-report.json
+report: /Users/ghostcorn/dev/motionbricks-mlx/out/eval/gate-report.json

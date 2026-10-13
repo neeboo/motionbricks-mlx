@@ -1,7 +1,7 @@
 {
  "schema": "motionbricks_mlx.bake.library/1",
  "created_local": "2026-10-12T23:21:31+0800",
- "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+ "bundle": "/Users/ghostcorn/dev/motionbricks-mlx/checkpoints/g1-f32-mlx",
  "styles_dir": "/Users/ghostcorn/dev/motion-bricks-cpp/repo/generated/styles",
  "device": "gpu",
  "python": "3.13.12",
@@ -549,7 +549,7 @@
     }
    ],
    "device": "gpu",
-   "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+   "bundle": "/Users/ghostcorn/dev/motionbricks-mlx/checkpoints/g1-f32-mlx",
    "release_stage_flag": "all+decode",
    "resolved_switches": {
     "bake_root_batch": true,
@@ -1182,7 +1182,7 @@
     }
    ],
    "device": "gpu",
-   "bundle": "/Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx",
+   "bundle": "/Users/ghostcorn/dev/motionbricks-mlx/checkpoints/g1-f32-mlx",
    "release_stage_flag": "all+decode",
    "resolved_switches": {
     "bake_root_batch": true,

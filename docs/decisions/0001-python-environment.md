@@ -15,7 +15,7 @@
 **重建命令**（换机器或删了 `.venv` 时）：
 
 ```sh
-cd ~/dev/motionbrick-mlx
+cd ~/dev/motionbricks-mlx
 python3.13 -m venv .venv
 ./.venv/bin/python -m pip install -U pip mlx numpy pytest
 ./.venv/bin/python scripts/check_env.py      # 期望最后一行 READY

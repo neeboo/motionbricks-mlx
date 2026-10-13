@@ -1,4 +1,4 @@
-# motionbrick-mlx
+# motionbricks-mlx
 中文: [README.zh-CN.md](README.zh-CN.md)
 
 Running MotionBricks inference on Apple Silicon with **MLX**: the default is
@@ -196,7 +196,7 @@ and the three lines (A/B/C) together with the human use only `./.venv/bin/python
 [decision 0001](docs/decisions/0001-python-environment.md).
 
 ```sh
-cd ~/dev/motionbrick-mlx
+cd ~/dev/motionbricks-mlx
 ./.venv/bin/python scripts/check_env.py          # prints platform/Python/MLX + one matrix smoke test, expect READY
 ```
 

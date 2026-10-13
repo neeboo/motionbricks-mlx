@@ -21,7 +21,7 @@ from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 
-CHECKPOINT_FORMAT = "motionbrick-mlx/ckpt-v0"
+CHECKPOINT_FORMAT = "motionbricks-mlx/ckpt-v0"
 MANIFEST_NAME = "manifest.json"
 CHECKPOINT_NAME = "checkpoint.npz"
 

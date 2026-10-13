@@ -19,7 +19,7 @@ http://127.0.0.1:8848/
 ## 1. 起与停
 
 ```bash
-cd ~/dev/motionbrick-mlx
+cd ~/dev/motionbricks-mlx
 ./.venv/bin/python scripts/mlx_viewer.py --port 8848 --device gpu
 ```
 
@@ -42,7 +42,7 @@ kill "$(cat artifacts/viewer-run/server.pid)"     # 干净退出，serve_forever
 启动时它自己打的日志（`artifacts/viewer-run/server.log` 开头）：
 
 ```
-loading /Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx on mlx-gpu ...
+loading /Users/ghostcorn/dev/motionbricks-mlx/checkpoints/g1-f32-mlx on mlx-gpu ...
 ready: cold start 370.7 ms, 15 styles, warm clip 44 frames
 viewer: http://127.0.0.1:8848/  (pid 78447)
 ```
@@ -345,7 +345,7 @@ app.js 254-272  ff5e7c4a2d565a56   present_verbatim=True
 ## 10. 一键复现
 
 ```bash
-cd ~/dev/motionbrick-mlx
+cd ~/dev/motionbricks-mlx
 
 # 起服务（受管后台任务 / 或前台跑）
 ./.venv/bin/python scripts/mlx_viewer.py --port 8848 --device gpu \
@@ -605,7 +605,7 @@ base64 解码后重算 sha256 并与证据比对）：
 起法不变，仍然**只有一个端口**（第 7 节）：
 
 ```bash
-cd ~/dev/motionbrick-mlx
+cd ~/dev/motionbricks-mlx
 ./.venv/bin/python scripts/mlx_viewer.py --port 8848 --device gpu
 ```
 
@@ -876,7 +876,7 @@ A→B（42 个异 style 格子）的 1.158 / 1.440 落在这个地板上，**多
 启动日志（`artifacts/switch-run/server.log`）：
 
 ```
-loading /Users/ghostcorn/dev/motionbrick-mlx/checkpoints/g1-f32-mlx on mlx-gpu ...
+loading /Users/ghostcorn/dev/motionbricks-mlx/checkpoints/g1-f32-mlx on mlx-gpu ...
 ready: cold start 293.9 ms, 15 styles, warm clip 44 frames
 viewer: http://127.0.0.1:8848/  (pid 65252)
 ```

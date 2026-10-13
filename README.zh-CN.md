@@ -1,4 +1,4 @@
-# motionbrick-mlx
+# motionbricks-mlx
 English: [README.md](README.md)
 
 在 Apple Silicon 上用 **MLX** 跑 MotionBricks 推理：默认是**单场景规划**
@@ -154,7 +154,7 @@ HUD 给出 `SEAM GAP 0.17 mm` / `SEAM JUMP 1.66×`（数字越小越好），画
 三条线（A/B/C）与人类只用 `./.venv/bin/python`，见 [decision 0001](docs/decisions/0001-python-environment.md)。
 
 ```sh
-cd ~/dev/motionbrick-mlx
+cd ~/dev/motionbricks-mlx
 ./.venv/bin/python scripts/check_env.py          # 打印平台/Python/MLX + 一次矩阵冒烟，期望 READY
 ```
 
