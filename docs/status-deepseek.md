@@ -814,3 +814,9 @@ release 形状的 `mlx_bench.py --bake-stages all+decode --bake 8 --bake-homogen
 （tokens 8/8、0/704 决策不同、safety 0.5290× 与 SUMMARY 逐位复现）、`mlx_switch.py` A→B→A
 （缝 0.170/0.275 mm，`worst_seam_ratio` 1.6628、`all_seams_within_p95=false`）。
 **只改 `README.md` 与本文件**；已 push 到 `origin/main`。
+
+---
+
+## 2026-10-13 · 画面证据入库、README 收口到"当前范围"（人类明确要求）并推送
+
+人类决定**训练线与"视频/第三方动作 → clip"搁置**，`README.md` 本轮据此收口：新增/改写 §5「当前范围与不做的事」（§5.1 六项交付状态、§5.2 为什么搁置与 `clip.npz` 冻结契约、§5.3 明确不做保留原三行），并把 `artifacts/switch-shots/`（`aba.gif` + `live-switch`/`hardcut-control` 对照对 + `seam1` 接缝静帧）、`artifacts/viewer-shots/viewer-final.png`、`artifacts/viewer-targets-shots/final-900-settle.png` 共 6 个文件、3,367,406 B（3.211 MiB，其中 4 个切换画面 2.64 MiB）**入库并在 README 内嵌**，三个目录各补一份极简 `README.md` 写清取舍。**本轮只改 `README.md`、上述 `artifacts/**` 证据与其 `README.md`、本文件**；`mlx_plan.py`/`mlx_align.py` 与源码未动、两个默认路径 sha256 不变，`pytest -q` **308 passed, 1 skipped**；已 push 到 `origin/main`（远端 HEAD 与本地一致）。

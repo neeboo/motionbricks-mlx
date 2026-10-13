@@ -2,9 +2,14 @@
 
 在 Apple Silicon 上用 **MLX** 跑 MotionBricks 推理：默认是**单场景规划**
 （GPU p50 **26.6 ms**；GPU 与 CPU 两个后端产出**逐字节相同**的 plan 文档，对参考运行时的逐阶段对齐
-`TRACE OK`、离散 token **零差异**），并在这条推理路径上落出两件可用产物——
-**离线批量烘焙**（一次烘一库真动作、导出可播的 plan 文档与动画，单风格时长同构库 release 档端到端 **4.44×**）
-与**浏览器查看器**（页面上每一段动作都是这台机器上的 MLX 现场算的，不是预录）。
+`TRACE OK`、离散 token **零差异**），并在这条推理路径上落出一整套可用产物——
+**离线批量烘焙**（一次烘一库真动作、导出可播的 plan 文档与动画，单风格时长同构库 release 档端到端 **4.44×**）、
+**浏览器查看器**（页面上每一段动作都是这台机器上的 MLX 现场算的，不是预录）、
+**目标关键帧**（在页面上摆 1–4 个目标帧，命中误差印在 HUD 上）
+与 **A→B→A 动作切换**（条件化当前状态，并给出可证伪的硬切对照）。
+
+**当前交付就到这里为止。** 训练线与"视频 / 第三方动作 → clip"**暂不在此范围**；
+B/C 两条线现在是什么状态、为什么搁置、接口冻在哪，见 [§5「当前范围与不做的事」](#5-当前范围与不做的事)。
 
 上游架构来自 NVIDIA MotionBricks（`NVlabs/GR00T-WholeBodyControl` 的 `motionbricks/`）。
 本仓库**只走 Apache-2.0 源码路线**：不使用、不转换、不再分发其预训练权重，见 [`NOTICE`](NOTICE)。
@@ -55,6 +60,13 @@
 
 ![批量 B=16 与单场景 B=1 并排（walk，44 帧，左批量右单场景）](artifacts/bake-2026-10-12/gifs/pairs/w05-batch-vs-single.gif)
 
+**这张图证明什么**：左（`BATCH B=16 (release cfg)`）与右（`SINGLE B=1`）是**同一个 walk 场景的两次规划**，
+骨架像素全部来自参考渲染器，本仓库的 `tools/side_by_side_gif.py` 只做并排拼接并顺手数像素。
+w05 这一对每帧的角上自己写着 `differing pixels 0/358400`；四个场景合计 **0/38,574,400 个像素不同**
+（差异全部落在亚像素），离散决策则是 **64/64 场景、0/4032 个 token 逐位一致**（上表两行）。
+**出处**：第 7 轮烘焙战役；渲染与拼接命令见 [BATCH-BAKE-RUN](docs/BATCH-BAKE-RUN.md) §5.1–§5.3，
+文件取舍见 [`artifacts/bake-2026-10-12/README.md`](artifacts/bake-2026-10-12/README.md)。
+
 ### 1.4 切换（A→B 的条件化生成）
 
 判据是任务书原文：接缝处的 `|dq|` ≤ 该片段内 `p95(|dq|)`，`q ∈ {位置, 速度, 加速度}`
@@ -73,6 +85,27 @@
 **关节角速度大幅改善（3.3×）但没有达标**；**关节角加速度两种方法一样差**，是机制边界——
 4 帧条件窗口里只有位置与一阶差分（速度），**没有加速度通道**（[VIEWER](docs/VIEWER.md) §3 末、§10）。
 
+![A→B→A 整段（84 帧取 42 帧，底部字幕带标出当前在哪条腿，两处接缝有青色竖标）](artifacts/switch-shots/aba.gif)
+
+**这张图证明什么**：`walk → walk_zombie → walk` 是**页面上一次连续播放**（第 20 帧、第 40 帧换 style），
+不是两段视频拼起来的。**怎么读**：底部字幕带写当前在哪条腿（`walk` / `walk_zombie`）与页面的帧号；
+画面里那两根**青色竖柱就是接缝标记**（图注里青色 = SWITCH SEAM），地面轨迹整条穿过了两处接缝
+（GIF 末帧是页面第 82 帧，HUD `WALKED 2.06 m`）。**出处**：第 10 轮，42 帧都是
+`?t=<帧>&paused=1` 的一次真实导航，源 PNG 的 sha256 记在 `artifacts/switch-run/gif-digests.txt`
+（[VIEWER](docs/VIEWER.md) 第 10 轮 §6）。
+
+![条件化切换：SEAM GAP 0.17 mm、SEAM JUMP 1.66×、ROOT Z 0.88 m，画面里一根青色接缝柱](artifacts/switch-shots/live-switch-1440x900.png)
+![硬切对照：同一时刻同一相机，只差一个 ?naive=1，SEAM GAP —、ROOT Z 0.30 m、没有接缝柱](artifacts/switch-shots/hardcut-control-1440x900.png)
+
+**这两张图证明什么**：**同一时刻、同一相机、只差 `?naive=1` 一个参数**的一对。左边是条件化切换，
+HUD 给出 `SEAM GAP 0.17 mm` / `SEAM JUMP 1.66×`（数字越小越好），画面里有一根**青色接缝柱**；
+右边走的是硬切臂（`2:walk_zombie:reset/adv0`：重置到接缝位姿、前进 0 帧），HUD 变成
+`SEAM GAP —` / `SEAM JUMP —`、**右侧无接缝柱**，同一时刻角色只在 z = 0.30 m（左边 0.88 m；
+[VIEWER](docs/VIEWER.md) 第 10 轮 §6 记的差值是 0.57 m）。
+**出处**：第 10 轮，无头 Chrome 只做导航与等待、不点界面、不合成输入；接缝那一帧的静帧
+（`SEAM GAP 0.28 mm` + 两条接缝柱）在 [`artifacts/switch-shots/seam1-ab-1440x900.png`](artifacts/switch-shots/seam1-ab-1440x900.png)，
+取舍见 [`artifacts/switch-shots/README.md`](artifacts/switch-shots/README.md)。
+
 ### 1.5 查看器（本机浏览器页面）
 
 | 项 | 实测 | 出处 |
@@ -82,18 +115,32 @@
 | 等效帧吞吐 / 相对 30 fps 的余量 | **1227 帧/秒** / **40.9×** | [VIEWER](docs/VIEWER.md) §4 |
 | 换 style 后接缝连贯性（`advance`） | 接缝误差 **≤ 0.55 mm**，世界位移连续累积 | [VIEWER](docs/VIEWER.md) §2 |
 
-查看器画面证据是**本机实拍的浏览器 WebGL 截图与 GIF**（`artifacts/viewer-shots/`、`artifacts/switch-shots/`），
-这些目录**没有入库**，所以本文不内嵌；拍摄方法与逐张 sha256 记在 [VIEWER](docs/VIEWER.md) §7、§5。
+![查看器实际画面：walk，CLIPS 11，WALKED 10.43 m，ROOT Z −7.88 m，W 键高亮、地面轨迹可见](artifacts/viewer-shots/viewer-final.png)
+
+**这张图证明什么**：页面上这段 walk 是**浏览器里的真实 WebGL 画面**——`PLAN 63.0 ms` 与
+`STEP RATE 26.0/s` 是页面自己报的实时数，`CLIPS 11` / `WALKED 10.43 m` 说明它是连续走出来的，
+不是另写的渲染脚本替代品。**出处**：第 8 轮，无头 Chrome 只做 `goto` + `wait_for_timeout`、
+无合成输入、未点界面（拍摄方法与逐张 sha256 见 [VIEWER](docs/VIEWER.md) §7；本图
+`f0f706960a1300b6`）。
+
+目标关键帧的命中画面（第 9 轮主图，`TARGET 0.111 m`；同一张的 DOM 属性
+`data-mlx-target-hit=0.111320`、`data-mlx-target-hit-ok=true`、`data-mlx-target-window=40-43`）也在库里：
+[`artifacts/viewer-targets-shots/final-900-settle.png`](artifacts/viewer-targets-shots/final-900-settle.png)
+（出处 [VIEWER](docs/VIEWER.md) 第 9 轮 §5）。
+
+画面证据**已入库**：`artifacts/viewer-shots/`（1 张）、`artifacts/viewer-targets-shots/`（1 张）、
+`artifacts/switch-shots/`（4 个文件，2.64 MiB）。每个目录里都有一份极简 `README.md` 写明
+哪张入库、哪些同批画面故意留在本机。
 
 ### 1.6 明确**未做到**的
 
 | 未做到 | 数字 |
 |---|---|
 | **切换的关节角速度没有达标** | 32/48 个格子仍高于段内 p95；中位 1.158（对照 3.788）。地板控制（A→A 同 style 续规划）自己就是 1.131–2.174，所以是机制地板，不是切换引入的（[VIEWER](docs/VIEWER.md) §3、§10） |
-| **切换的关节角加速度没有达标，而且两种方法一样差** | 本方法 42/48 超判据（中位 1.398），硬切对照 48/48（1.969）；`all_seams_within_p95` 在所有主配置里都是 `false`。4 帧窗口没有加速度通道，**要修得改模型条件通道（训练侧）** |
+| **切换的关节角加速度没有达标，而且两种方法一样差** | 本方法 42/48 超判据（中位 1.398），硬切对照 48/48（1.969）；`all_seams_within_p95` 在所有主配置里都是 `false`。4 帧窗口没有加速度通道，**要修得改模型条件通道（训练侧）**——训练线已按人类决定搁置（§5.2），所以这条残差是**已知、且不在本轮修复**的 |
 | **全阶段批量后最终动作不是逐位的** | `bake_action_bit_identical=false`；roots ≤ 2.027e-06 m、rotations ≤ 2.753e-05，按容差判为合格 |
 | **混风格同构库的档位掉到 draft** | `diverse`（8 种真实风格 · 同构 B=16）比值 **1.2716**（B=8 是 1.4402）→ draft；单风格同构批次才是 0.4089 → release（[BATCH-BAKE-RUN](docs/BATCH-BAKE-RUN.md) §0、§1.4） |
-| **量化（q8/q4）不做** | 见 §4 |
+| **量化（q8/q4）不做** | 见 §5.3 |
 | **查看器只验证过单客户端、且只实测过 GPU 档** | `--device cpu` 协议支持但页面没实测（[VIEWER](docs/VIEWER.md) §9 第 10 条） |
 | **目标关键帧的命中包络有边界** | 正前方约 ≤4 m、侧向约 ≤2–3 m（按 style），超出就 `OUT OF TOLERANCE`；模型**不拒绝也不夹取**，会外推到 49 m/s@50 m（[VIEWER](docs/VIEWER.md) 第 9 轮 §3） |
 
@@ -109,7 +156,7 @@ cd ~/dev/motionbrick-mlx
 ./.venv/bin/python scripts/check_env.py          # 打印平台/Python/MLX + 一次矩阵冒烟，期望 READY
 ```
 
-**默认单场景规划**（`--out` 是必填，见 §5 硬规则）——两个后端分开进程跑：
+**默认单场景规划**（`--out` 是必填，见 §4 硬规则）——两个后端分开进程跑：
 
 ```sh
 ./.venv/bin/python scripts/mlx_plan.py --device gpu --out /tmp/step-gpu.json
@@ -235,13 +282,18 @@ src/motionbricks_mlx/motion/   表示、重定向、读写
 src/motionbricks_mlx/models/   MLX 的 root/pose/decoder 与批量烘焙编排
 src/motionbricks_mlx/data/     数据集加载、agent、上下文、目标帧、切换
 src/motionbricks_mlx/export/   plan 文档 / VRMA 导出
-src/motionbricks_mlx/training/ B：训练脚手架（VQ-VAE、数据集、checkpoint）
-src/motionbricks_mlx/eval/     C：动作质量指标与回归门
+src/motionbricks_mlx/training/ B：训练脚手架（VQ-VAE、数据集、checkpoint）——已提交，按 §5.2 **暂停**、未接真实数据
+src/motionbricks_mlx/eval/     C：动作质量指标与回归门（已交付并在用，§5.2）
 scripts/mlx_{plan,bench,align,convert_gguf,plan_targets,switch,viewer,bake_library}.py
 viewer/                        浏览器页面（自有 HTML/CSS/JS + 参考 demo 的 three.js vendor 与骨架模块）
 tools/side_by_side_gif.py      只做并排拼接（像素全部来自参考渲染器）
 tests/                         308 passed, 1 skipped
 artifacts/bake-2026-10-12/     烘焙证据（manifest、对照、日志、GIF；哪些入库见该目录 README.md）
+artifacts/viewer-shots/        查看器主图（1 张）
+artifacts/viewer-targets-shots/ 目标关键帧命中主图（1 张）
+artifacts/switch-shots/        切换画面：aba.gif + live-switch / hardcut-control 对照对 + 接缝静帧
+artifacts/switch-run/  artifacts/{bake-2026-10-12,viewer,viewer-targets}-run/
+                               本机产物（report/plan/log/pid/探针/GIF 中间帧），**不入库**（逐目录取舍见各 README.md）
 datasets/  checkpoints/  out/  本地产物，不入库（.gitignore）
 ```
 
@@ -265,14 +317,45 @@ datasets/  checkpoints/  out/  本地产物，不入库（.gitignore）
 
 ---
 
-## 5. 明确不做
+## 5. 当前范围与不做的事
+
+### 5.1 当前交付范围（就到这里为止）
+
+本仓库现在交付的是这条推理路径上的全部产物：
+
+| 交付 | 状态 | 证据 |
+|---|---|---|
+| MLX 推理，对参考运行时逐位对齐 | **已完成** | §1.1、§1.2 |
+| 优化定档（release / draft 的机械判据） | **已完成** | §1.3、§4 |
+| release 档批量烘焙（`--bake-stages all+decode`） | **已完成** | §1.3、§1.6 |
+| 浏览器查看器（单客户端、实测 GPU 档） | **已完成** | §1.5 |
+| 目标关键帧（页面上摆、HUD 报命中） | **已完成**，命中包络有边界（§1.6） | §1.5 |
+| 动作切换（A→B、A→B→A，条件化生成） | **已完成**：位置与 root 速度达标，关节角速度/角加速度**未**达标（§1.6） | §1.4 |
+
+### 5.2 训练线与"视频 / 第三方动作 → clip"暂不在此范围
+
+**人类已决定搁置这条线**，理由是数据源，不是工程量：空间内现有的动作是 **Unity 自带的一批动作
+＋少量 BONES 动作**，直接拿它们训练只会把机械感一起学进去；"从视频 / 第三方动作转成 clip"
+是另一半，也还没有解决数据从哪来——**另立一项，不进本仓库主干**。据此：
+
+* **C 线（`src/motionbricks_mlx/eval/**`，动作质量评测与回归门）已交付并在用**：本仓库的烘焙产物
+  就是用同一套阈值复核的（§1.3 的 `GATE PASS`、§1.4 的质量门）。
+* **B 线（`src/motionbricks_mlx/training/**`，训练脚手架）已提交、但按此决定暂停**：它全链路能跑、
+  测试是绿的，**只喂过合成 shard、没有接真实数据**——不要读成"训练已完成"。
+* **两条线都是独立做法，通过已冻结的契约对接**：磁盘形态是 [`docs/motion-representation.md`](docs/motion-representation.md)
+  定义的 `clip.npz`（外加 `motion/representation.py` 导出的常量）。将来若有人接手训练，
+  **不进本仓库主干**，只按这份契约产出 `clip.npz` 交给推理侧。
+* 这条决定**没有撤销任何已入库的数字**：§1.4 / §1.6 里"要修得改模型条件通道（训练侧）"那两行残差
+  保持已知、保持不在本轮修复。
+
+### 5.3 明确不做
 
 | 不做 | 为什么（带证据） |
 |---|---|
 | **量化（q8 / q4）** | 会改动作：q4 逐 token 差异 27–31 %、3/6 步连时长都变、roots 达容差的 30–91×；q8 差异 1.5–3.6 %、roots 2.2–25.6×；`mlx_align plan` 对参考 FAIL（q8 4 个数组、q4 9 个）。裁定见 [0004](docs/decisions/0004-adopt-bit-identical-f32.md)、[0005](docs/decisions/0005-backend-conditional-compile.md) 与报告第 6/9 节。 |
 | **单场景实时路径的进一步优化** | 宿主数学已从 17.58 → 1.74 ms/步（报告 §12–13）；把 FK/约束搬进 MLX 图在 B=1 是**净亏**（1.64 ms vs 宿主 0.371 ms，且 `cos/sin/arctan2` 与 NumPy 差 1–2 ULP）；`pred_local_defer` / `decoder_defer` 在 B=1 只有 1.0207× / 1.0035×，低于 1.05× 门槛，按判据否决。它们**只在批量里才值钱**。 |
 | **参考运行时侧的事** | 参考 checkout `~/dev/motion-bricks-cpp` 全程只读、一个字节没改；GGUF / 引擎侧不在本仓库范围。 |
-| **训练与评测线** | `src/motionbricks_mlx/training/**`（B）、`src/motionbricks_mlx/eval/**`（C）各有工单与状态文件，归属见 §9；A 侧只**只读** import eval 的阈值，不改一行。 |
+| **训练线与"视频 → clip"** | 见 §5.2：B 线提交后暂停、未接真实数据；训练与数据源另立一项，只按 `clip.npz` 契约交货。 |
 
 ---
 
@@ -280,7 +363,8 @@ datasets/  checkpoints/  out/  本地产物，不入库（.gitignore）
 
 * 本仓库代码 **Apache-2.0**（[`LICENSE`](LICENSE)）。
 * **不使用、不转换、不再分发 NVIDIA 预训练权重**：上游源码是 Apache-2.0，权重是 NVIDIA Open Model License；
-  本仓库产出的每个 checkpoint 都由我们自己生成的数据训练（[`NOTICE`](NOTICE)）。
+  本仓库产出的每个 checkpoint 都由我们自己生成的数据训练（[`NOTICE`](NOTICE)）——**当前没有发布任何
+  checkpoint**，B 线训练脚手架只喂过合成 shard（§5.2）。
 * 查看器复用：`viewer/vendor/three.module.min.js`、`three.core.min.js`、`THREE-LICENSE.txt` 是**逐字节复制**
   （three.js 本体是 MIT）；`viewer/rig.js` 的骨架 rig/label/画线四段与 `viewer/style.css` 前 63 行
   **逐字复制**自参考 demo（Apache-2.0），唯一机械改动与原始行号写在文件头注释里；
@@ -326,8 +410,11 @@ datasets/  checkpoints/  out/  本地产物，不入库（.gitignore）
 5. **查看器一个进程 = 一个 agent。** 多客户端会互相打乱上下文；本轮所有测量都是单客户端串行。
    要多人用就得给 agent 加会话键。`--device cpu` 协议支持但页面没实测。
 6. **服务随会话结束而停**，它不做鉴权、不绑远程地址（`--host` 只接受 `127.0.0.1`）。
-7. **查看器画面证据未入库。** `artifacts/viewer-shots/`、`artifacts/switch-shots/`、`artifacts/viewer-run/`
-   都在磁盘上但**没有提交**，所以本文只内嵌了已入库的烘焙 GIF。
+7. **画面证据只入库了正文引用的那几张。** `artifacts/viewer-shots/`（1 张）、
+   `artifacts/viewer-targets-shots/`（1 张）、`artifacts/switch-shots/`（4 个文件，2.64 MiB）**已提交**；
+   同一批会话的其余帧、`artifacts/{switch,viewer,viewer-targets}-run/**` 与
+   `artifacts/bake-2026-10-12/*/plans/**`、`runs-*.json`、`render-*.json`、`server.log`、`*.pid`、
+   探针脚本、GIF 中间帧**故意不入库**（可再生产），逐目录取舍写在各目录的 `README.md` 里。
 8. **参考版 GGML 的 380 ms 是引用值**，不是在只读 checkout 里复测或找到出处的；真正同口径的对照是本仓库
    自己的 GPU 单场景 p50 26.6 ms（[VIEWER](docs/VIEWER.md) §4）。
 9. **`/api/client-metrics` 只留最后一次页面自报**，不聚合历史；HUD 的 step rate 是最近 8 次规划的滑动中位数。
@@ -341,17 +428,19 @@ datasets/  checkpoints/  out/  本地产物，不入库（.gitignore）
 | 归属 | 谁 | 文件范围 | 现状 |
 |---|---|---|---|
 | **A. 推理移植 / 优化 / 烘焙 / 查看器 / 切换** | **DeepSeek** | `src/motionbricks_mlx/{models,data,export,motion}/**`、`scripts/mlx_*.py`、`tests/test_mlx_*.py`、`tests/test_viewer_*.py`、`viewer/**`、`docs/status-deepseek.md`、`docs/SUMMARY.md`、`docs/VIEWER.md`、`docs/BATCH-BAKE-RUN.md`、`docs/optimization-report.md`、`docs/decisions/**` 的提案 | **已完成**（第 1–10 轮）：MLX 推理与逐位对齐、优化定档、release 档批量烘焙、浏览器查看器、目标关键帧、动作切换 |
-| **B. 模型与训练** | **Claude Code** | `src/motionbricks_mlx/training/**`、`scripts/train_vqvae.py`、`tests/test_training_*.py`、`docs/status-claude.md` | 训练脚手架**已提交**（`bc78bd8`）且全链路可跑、测试绿；但**只喂过合成 shard，还没有接真实数据** |
-| **C. 动作质量评测与回归门** | **GLM** | `src/motionbricks_mlx/eval/**`、`scripts/eval_{collect,gate}.py`、`tests/test_eval_*.py`、`docs/status-glm.md` | **已交付并在用**（`306a684`）：6 个指标族、带出处的阈值表、5 项负对照、`eval_gate.py` GATE PASS；A 侧用它复核烘焙产物 |
-| **D. 冻结区** | **人类** | `LICENSE`、`NOTICE`、`pyproject.toml`、`.gitignore`、`README.md`、`docs/motion-representation.md` | 未动；`README.md` 本轮由人类明确要求重写 |
+| **B. 模型与训练** | **Claude Code** | `src/motionbricks_mlx/training/**`、`scripts/train_vqvae.py`、`tests/test_training_*.py`、`docs/status-claude.md` | 训练脚手架**已提交**（`bc78bd8`）且全链路可跑、测试绿；但**只喂过合成 shard、没有接真实数据**，并按人类决定**暂停**（§5.2）：将来接手只按 `clip.npz` 契约交货，不进本仓库主干 |
+| **C. 动作质量评测与回归门** | **GLM** | `src/motionbricks_mlx/eval/**`、`scripts/eval_{collect,gate}.py`、`tests/test_eval_*.py`、`docs/status-glm.md` | **已交付并在用**（`306a684`）：6 个指标族、带出处的阈值表、5 项负对照、`eval_gate.py` GATE PASS；A 侧用它复核烘焙产物（§1.3、§1.4） |
+| **D. 冻结区** | **人类** | `LICENSE`、`NOTICE`、`pyproject.toml`、`.gitignore`、`README.md`、`docs/motion-representation.md` | `LICENSE` / `NOTICE` / `pyproject.toml` / `.gitignore` / `docs/motion-representation.md` **未动**；`README.md` 已由人类明确授权重写（上一轮写门面，本轮补画面证据并把范围收口到 §5） |
 
 * **接口优先**：A 与 B/C 之间只通过 `docs/motion-representation.md`（数据契约）与
   `motion/representation.py` 导出的常量（`FRAME_DIM`、`OFFSETS`、`CLIP_META_KEYS`）互相依赖。
   A 改这些＝契约变更，必须同时给 schema 版本号与迁移说明；B/C 不得自行改契约。
+  这份契约也是**训练线将来接手时的唯一交接面**（B 线已按 §5.2 暂停）。
 * **状态不共享文件**：各自只写自己的 `docs/status-*.md`，避免互相覆盖（吃过一次教训）。
 * **提交纪律**：只提交自己名下的文件；`datasets/`、`checkpoints/`、`out/` 不入库，
   数据集与 checkpoint 靠 **manifest**（`git sha + 随机种子 + 超参 + 数据来源 id`）复现；
   每次提交写清"本轮实际跑了什么验证"，**不许写"已验证全套"**；长时间训练同时只允许一个人跑。
 * **人类决定的事**：范围与优先级、动作表示里的取舍、审美、许可证相关的一切、`docs/decisions/**` 的裁定
-  （agent 只写提案）、以及推到 `main`。
+  （agent 只写提案）、以及推到 `main`。**"训练线与视频 → clip 暂不做"就是一条这样的范围决定**
+  （§5.2），它搁置的是工作量、不是已入库的结论。
 * **每个结论都要带证据**：阈值要能失败（"改坏就红"）、数字要来自真实运行、看不清的地方写"未验证"。
