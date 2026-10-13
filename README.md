@@ -518,39 +518,3 @@ Evidence documents: [SUMMARY](docs/SUMMARY.md) (the wrap-up baseline), [optimiza
    GPU single-scenario p50 26.6 ms ([VIEWER](docs/VIEWER.md) §4).
 9. **`/api/client-metrics` keeps only the last page self-report**, it does not aggregate history; the
    HUD's step rate is the sliding median of the last 8 plans.
-
----
-
-## 9. Division of labor (this repository is advanced by three agents and one human)
-
-**There is only one core rule: one file has exactly one writer at a time.** Cross a boundary only after
-coordinating first.
-
-| Owner | Who | File scope | Status |
-|---|---|---|---|
-| **A. Inference port / optimization / baking / viewer / switching** | **DeepSeek** | `src/motionbricks_mlx/{models,data,export,motion}/**`, `scripts/mlx_*.py`, `tests/test_mlx_*.py`, `tests/test_viewer_*.py`, `viewer/**`, `docs/status-deepseek.md`, `docs/SUMMARY.md`, `docs/VIEWER.md`, `docs/BATCH-BAKE-RUN.md`, `docs/optimization-report.md`, proposals under `docs/decisions/**` | **Done** (rounds 1–10): MLX inference and bit-alignment, optimization tiering, release-tier batch baking, browser viewer, target keyframes, motion switching |
-| **B. Model and training** | **Claude Code** | `src/motionbricks_mlx/training/**`, `scripts/train_vqvae.py`, `tests/test_training_*.py`, `docs/status-claude.md` | the training scaffold is **committed** (`bc78bd8`) and the whole chain runs with green tests; but **it has only ever been fed synthetic shards and has never been connected to real data**, and it is **paused** by human decision (§5.2): a future owner delivers only through the `clip.npz` contract and does not enter this repository's mainline |
-| **C. Motion quality evaluation and regression gate** | **GLM** | `src/motionbricks_mlx/eval/**`, `scripts/eval_{collect,gate}.py`, `tests/test_eval_*.py`, `docs/status-glm.md` | **delivered and in use** (`306a684`): 6 families of metrics, a threshold table with sources, 5 negative controls, `eval_gate.py` GATE PASS; the A side uses it to re-check baking artifacts (§1.3, §1.4) |
-| **D. Frozen zone** | **Human** | `LICENSE`, `NOTICE`, `pyproject.toml`, `.gitignore`, `README.md`, `docs/motion-representation.md` | `LICENSE` / `NOTICE` / `pyproject.toml` / `.gitignore` / `docs/motion-representation.md` are **untouched**; `README.md` has been explicitly authorized by the human to be rewritten (the previous round wrote the front page, this round adds picture evidence and narrows the scope into §5) |
-
-* **Interface first**: A and B/C depend on each other only through `docs/motion-representation.md` (the
-  data contract) and
-  the constants exported by `motion/representation.py` (`FRAME_DIM`, `OFFSETS`, `CLIP_META_KEYS`).
-  A changing these equals a contract change and must come with a schema version and migration notes;
-  B/C must not change the contract themselves.
-  This contract is also **the only hand-off surface for a future training owner** (the B line is paused
-  per §5.2).
-* **Status files are not shared**: each writes only their own `docs/status-*.md`, to avoid overwriting
-  each other (we learned that lesson once).
-* **Commit discipline**: commit only the files under your own name; `datasets/`, `checkpoints/` and
-  `out/` are not committed,
-  and datasets and checkpoints are reproduced from a **manifest** (`git sha + random seed + hyperparameters + data source id`);
-  every commit states clearly "what verification was actually run this round", **never write "the whole
-  suite was verified"**; only one person may run long training at a time.
-* **What the human decides**: scope and priorities, the trade-offs in the motion representation,
-  aesthetics, everything license-related, the rulings in `docs/decisions/**`
-  (agents only write proposals), and pushing to `main`. **"The training line and video → clip are on
-  hold for now" is exactly one such scope decision**
-  (§5.2); it puts work on hold, not committed conclusions.
-* **Every conclusion carries evidence**: a threshold must be able to fail ("break it and it goes red"),
-  numbers must come from real runs, and anything unclear is written down as "unverified".

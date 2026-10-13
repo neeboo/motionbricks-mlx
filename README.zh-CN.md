@@ -1,5 +1,5 @@
 # motionbrick-mlx
-English: [README.en.md](README.en.md)
+English: [README.md](README.md)
 
 在 Apple Silicon 上用 **MLX** 跑 MotionBricks 推理：默认是**单场景规划**
 （GPU p50 **26.6 ms**；GPU 与 CPU 两个后端产出**逐字节相同**的 plan 文档，对参考运行时的逐阶段对齐
@@ -420,29 +420,3 @@ datasets/  checkpoints/  out/  本地产物，不入库（.gitignore）
 8. **参考版 GGML 的 380 ms 是引用值**，不是在只读 checkout 里复测或找到出处的；真正同口径的对照是本仓库
    自己的 GPU 单场景 p50 26.6 ms（[VIEWER](docs/VIEWER.md) §4）。
 9. **`/api/client-metrics` 只留最后一次页面自报**，不聚合历史；HUD 的 step rate 是最近 8 次规划的滑动中位数。
-
----
-
-## 9. 分工（本仓库由三个 agent 与一位人类共同推进）
-
-**核心规则只有一条：一份文件同一时间只有一个写手。** 越界前必须先协调。
-
-| 归属 | 谁 | 文件范围 | 现状 |
-|---|---|---|---|
-| **A. 推理移植 / 优化 / 烘焙 / 查看器 / 切换** | **DeepSeek** | `src/motionbricks_mlx/{models,data,export,motion}/**`、`scripts/mlx_*.py`、`tests/test_mlx_*.py`、`tests/test_viewer_*.py`、`viewer/**`、`docs/status-deepseek.md`、`docs/SUMMARY.md`、`docs/VIEWER.md`、`docs/BATCH-BAKE-RUN.md`、`docs/optimization-report.md`、`docs/decisions/**` 的提案 | **已完成**（第 1–10 轮）：MLX 推理与逐位对齐、优化定档、release 档批量烘焙、浏览器查看器、目标关键帧、动作切换 |
-| **B. 模型与训练** | **Claude Code** | `src/motionbricks_mlx/training/**`、`scripts/train_vqvae.py`、`tests/test_training_*.py`、`docs/status-claude.md` | 训练脚手架**已提交**（`bc78bd8`）且全链路可跑、测试绿；但**只喂过合成 shard、没有接真实数据**，并按人类决定**暂停**（§5.2）：将来接手只按 `clip.npz` 契约交货，不进本仓库主干 |
-| **C. 动作质量评测与回归门** | **GLM** | `src/motionbricks_mlx/eval/**`、`scripts/eval_{collect,gate}.py`、`tests/test_eval_*.py`、`docs/status-glm.md` | **已交付并在用**（`306a684`）：6 个指标族、带出处的阈值表、5 项负对照、`eval_gate.py` GATE PASS；A 侧用它复核烘焙产物（§1.3、§1.4） |
-| **D. 冻结区** | **人类** | `LICENSE`、`NOTICE`、`pyproject.toml`、`.gitignore`、`README.md`、`docs/motion-representation.md` | `LICENSE` / `NOTICE` / `pyproject.toml` / `.gitignore` / `docs/motion-representation.md` **未动**；`README.md` 已由人类明确授权重写（上一轮写门面，本轮补画面证据并把范围收口到 §5） |
-
-* **接口优先**：A 与 B/C 之间只通过 `docs/motion-representation.md`（数据契约）与
-  `motion/representation.py` 导出的常量（`FRAME_DIM`、`OFFSETS`、`CLIP_META_KEYS`）互相依赖。
-  A 改这些＝契约变更，必须同时给 schema 版本号与迁移说明；B/C 不得自行改契约。
-  这份契约也是**训练线将来接手时的唯一交接面**（B 线已按 §5.2 暂停）。
-* **状态不共享文件**：各自只写自己的 `docs/status-*.md`，避免互相覆盖（吃过一次教训）。
-* **提交纪律**：只提交自己名下的文件；`datasets/`、`checkpoints/`、`out/` 不入库，
-  数据集与 checkpoint 靠 **manifest**（`git sha + 随机种子 + 超参 + 数据来源 id`）复现；
-  每次提交写清"本轮实际跑了什么验证"，**不许写"已验证全套"**；长时间训练同时只允许一个人跑。
-* **人类决定的事**：范围与优先级、动作表示里的取舍、审美、许可证相关的一切、`docs/decisions/**` 的裁定
-  （agent 只写提案）、以及推到 `main`。**"训练线与视频 → clip 暂不做"就是一条这样的范围决定**
-  （§5.2），它搁置的是工作量、不是已入库的结论。
-* **每个结论都要带证据**：阈值要能失败（"改坏就红"）、数字要来自真实运行、看不清的地方写"未验证"。
