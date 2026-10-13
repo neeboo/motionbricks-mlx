@@ -799,3 +799,18 @@ CPU `262e77d438daa8a790eccf23f8cfd696bf620a304bb4d42b54e38282e085b64a`，与
 `NOTICE`、`LICENSE`、`pyproject.toml` **未动**；`mlx_plan.py`/`mlx_align.py` 语义未动；
 参考仓库 `~/dev/motion-bricks-cpp` **全程只读**；无新依赖（GIF 用系统 python3 的 Pillow，
 没有往 `.venv` 装东西）；**无 push**。
+
+---
+
+## 2026-10-13 · README 重写（人类明确要求）并推送
+
+`README.md` 本轮由人类明确授权重写为项目门面（平时它在冻结区）：一句话定位、带出处的已验收数字与
+**未做到**项、可复制运行的命令、目录结构、档位与硬规则、明确不做、许可证与归属、决策与证据索引、诚实边界，
+分工表更新为现状（A 推理/优化/烘焙/查看器/切换已完成、B 训练脚手架已提交但只喂过合成 shard、
+C 评测门已交付并在用、D 冻结区）。**本轮实跑复核**：`mlx_plan.py` GPU/CPU 两个 sha256 与
+`out/plan-mlx-{gpu,}.json` 逐字节相同（`ccda1952…` / `262e77d4…`）、`mlx_align.py plan`
+`ALIGNMENT OK`（worst 0.26× 容差）、`trace` 两后端 `TRACE OK`、`pytest -q` **308 passed, 1 skipped**、
+release 形状的 `mlx_bench.py --bake-stages all+decode --bake 8 --bake-homogeneous --bake-single-pass`
+（tokens 8/8、0/704 决策不同、safety 0.5290× 与 SUMMARY 逐位复现）、`mlx_switch.py` A→B→A
+（缝 0.170/0.275 mm，`worst_seam_ratio` 1.6628、`all_seams_within_p95=false`）。
+**只改 `README.md` 与本文件**；已 push 到 `origin/main`。
