@@ -1,6 +1,6 @@
 # 交给 GLM 的工单：动作质量评测与回归门
 
-**工作目录**：`~/dev/motionbrick-mlx`。先读 `README.md`（分工规则）、`NOTICE`（只走 Apache-2.0 源码路线）、
+**工作目录**：`~/dev/motionbrick-mlx`。先读 `docs/status-glm.md`（分工规则）、`NOTICE`（只走 Apache-2.0 源码路线）、
 `docs/decisions/0001-python-environment.md`（统一用 `./.venv/bin/python`）、
 `docs/decisions/0003-downstream-runtime.md`（下游是 motion-bricks.cpp，GGUF 是边界）、
 `docs/motion-representation.md`（动作表示契约）。

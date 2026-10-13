@@ -1,6 +1,6 @@
 # 交给 Claude Code 的工单（B 侧：训练脚手架）
 
-**工作目录**：`~/dev/motionbrick-mlx`。先读 `README.md`（分工与规则）、`NOTICE`（只走 Apache-2.0 源码路线）、
+**工作目录**：`~/dev/motionbrick-mlx`。先读 `docs/status-claude.md`（分工与规则）、`NOTICE`（只走 Apache-2.0 源码路线）、
 `docs/decisions/0001-python-environment.md`（统一用 `./.venv/bin/python`）、
 `docs/decisions/0003-downstream-runtime.md`（下游是 motion-bricks.cpp，GGUF 是边界）。
 
