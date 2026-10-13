@@ -1,5 +1,5 @@
 # motionbrick-mlx
-中文: [README.md](README.md)
+中文: [README.zh-CN.md](README.zh-CN.md)
 
 Running MotionBricks inference on Apple Silicon with **MLX**: the default is
 **single-scenario planning**
